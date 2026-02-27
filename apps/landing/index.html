@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Slate - Coming Soon</title>
+    <link href="https://fonts.googleapis.com" rel="preconnect" />
+    <link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&amp;family=Inter:wght@300;400;500;600&amp;display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              "matte-charcoal": "#0f0f10",
+              "charcoal-dark": "#0a0a0b",
+              "rust-accent": "#dea584",
+            },
+            fontFamily: {
+              sans: ["Inter", "sans-serif"],
+              mono: ["JetBrains Mono", "monospace"],
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        background-color: #0a0a0b;
+        color: #e4e4e7;
+      }
+      .shader-container {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        z-index: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background:
+          radial-gradient(
+            circle at 50% 50%,
+            rgba(30, 35, 40, 0.4) 0%,
+            rgba(10, 10, 11, 1) 60%
+          ),
+          linear-gradient(to bottom right, #0a0a0b, #151518);
+      }
+      .crystal-shard {
+        position: absolute;
+        opacity: 0.4;
+        mix-blend-mode: color-dodge;
+        filter: blur(40px);
+      }
+      .shard-1 {
+        width: 80vw;
+        height: 80vh;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(80, 90, 100, 0.15) 0%,
+          transparent 70%
+        );
+        transform: translate(5px, -10px) scale(1.02) rotate(1deg);
+      }
+      .shard-2 {
+        width: 60vw;
+        height: 60vh;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(100, 110, 120, 0.1) 0%,
+          transparent 60%
+        );
+        margin-left: -10%;
+        transform: translate(-5px, 7px) scale(0.99) rotate(-0.5deg);
+      }
+      .shard-3 {
+        width: 40vw;
+        height: 40vh;
+        background: radial-gradient(
+          circle at center,
+          rgba(140, 150, 160, 0.08) 0%,
+          transparent 50%
+        );
+        margin-top: 10%;
+        transform: translate(2px, 2px);
+      }
+      .edge-light {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        background: conic-gradient(
+          from 45deg at 50% 50%,
+          transparent 0deg,
+          rgba(255, 255, 255, 0.03) 60deg,
+          transparent 120deg,
+          transparent 240deg,
+          rgba(255, 255, 255, 0.02) 300deg,
+          transparent 360deg
+        );
+        mix-blend-mode: overlay;
+      }
+      .noise-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 20;
+        opacity: 0.07;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      }
+    </style>
+  </head>
+  <body
+    class="bg-charcoal-dark h-screen w-screen overflow-hidden flex flex-col items-center justify-center relative selection:bg-white/20 selection:text-white"
+  >
+    <div class="noise-overlay"></div>
+    <div class="shader-container" id="shader-container">
+      <div class="edge-light"></div>
+      <div class="crystal-shard shard-1"></div>
+      <div class="crystal-shard shard-2"></div>
+      <div class="crystal-shard shard-3"></div>
+    </div>
+    <main
+      class="relative z-30 flex flex-col items-center justify-center text-center w-full max-w-4xl px-4"
+    >
+      <div class="flex flex-col items-center w-full">
+        <div class="relative group cursor-default mb-6">
+          <h1
+            class="font-mono text-7xl md:text-[9rem] font-bold tracking-tight text-white/90 select-none leading-none relative z-10"
+          >
+            SLATE<span class="text-rust-accent">.</span>
+          </h1>
+        </div>
+        <div class="w-full flex justify-center">
+          <p
+            class="font-mono text-xs md:text-sm tracking-[0.6em] uppercase text-white/40 font-medium select-none text-center indent-[-1.6em] whitespace-nowrap"
+          >
+            Coming Soon
+          </p>
+        </div>
+      </div>
+    </main>
+    <div class="absolute bottom-12 z-30">
+      <div
+        class="flex items-center space-x-3 px-5 py-2.5 rounded-full border border-white/10 bg-white/5 backdrop-blur-sm text-[10px] md:text-xs text-white/60 font-mono tracking-wide shadow-lg cursor-default"
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500/80"></span>
+        <span
+          >Local-first. Open Source.
+          <span class="text-rust-accent font-semibold">Built in Rust</span
+          >.</span
+        >
+      </div>
+    </div>
+  </body>
+</html>
