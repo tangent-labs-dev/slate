@@ -1978,6 +1978,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "thaw",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

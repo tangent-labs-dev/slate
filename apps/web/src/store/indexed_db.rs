@@ -35,7 +35,9 @@ pub async fn load_all_notes() -> Result<Vec<Note>, JsValue> {
     let mut notes = Vec::new();
     for v in values {
         if let Ok(note) = serde_wasm_bindgen::from_value::<Note>(v) {
-            notes.push(note);
+            if !note.is_deleted {
+                notes.push(note);
+            }
         }
     }
 
@@ -52,6 +54,20 @@ pub async fn upsert_note(note: &Note) -> Result<(), JsValue> {
         .store(NOTES_STORE)
         .map_err(|e| JsValue::from_str(&format!("store failed: {e}")))?;
 
+    let existing = store
+        .get(JsValue::from_str(&note.id))
+        .await
+        .map_err(|e| JsValue::from_str(&format!("get existing failed: {e}")))?;
+    if let Some(existing_value) = existing
+        && let Ok(existing_note) = serde_wasm_bindgen::from_value::<Note>(existing_value)
+        && existing_note.updated_at > note.updated_at
+    {
+        tx.done()
+            .await
+            .map_err(|e| JsValue::from_str(&format!("tx done failed: {e}")))?;
+        return Ok(());
+    }
+
     let value = serde_wasm_bindgen::to_value(note)
         .map_err(|e| JsValue::from_str(&format!("serialize failed: {e}")))?;
 
@@ -66,22 +82,3 @@ pub async fn upsert_note(note: &Note) -> Result<(), JsValue> {
     Ok(())
 }
 
-pub async fn delete_note(note_id: &str) -> Result<(), JsValue> {
-    let db = open_db().await?;
-    let tx = db
-        .transaction(&[NOTES_STORE], TransactionMode::ReadWrite)
-        .map_err(|e| JsValue::from_str(&format!("readwrite tx failed: {e}")))?;
-    let store = tx
-        .store(NOTES_STORE)
-        .map_err(|e| JsValue::from_str(&format!("store failed: {e}")))?;
-
-    store
-        .delete(JsValue::from_str(note_id))
-        .await
-        .map_err(|e| JsValue::from_str(&format!("delete failed: {e}")))?;
-
-    tx.done()
-        .await
-        .map_err(|e| JsValue::from_str(&format!("tx done failed: {e}")))?;
-    Ok(())
-}

@@ -1,10 +1,12 @@
-use js_sys::{Date, Math};
+use js_sys::Date;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EditorMode {
     Raw,
     Preview,
+    Split,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -14,12 +16,17 @@ pub struct Note {
     pub content: String,
     pub created_at: f64,
     pub updated_at: f64,
+    #[serde(default)]
+    pub is_deleted: bool,
+    #[serde(default)]
+    pub deleted_at: Option<f64>,
+    #[serde(default)]
+    pub last_synced_at: Option<f64>,
 }
 
 impl Note {
     pub fn new(title: impl Into<String>, content: impl Into<String>) -> Self {
         let now = Date::now();
-        let random = (Math::random() * 1_000_000.0) as u64;
         let content = content.into();
 
         let mut title = title.into();
@@ -28,11 +35,14 @@ impl Note {
         }
 
         Self {
-            id: format!("note-{}-{}", now as u64, random),
+            id: Uuid::new_v4().to_string(),
             title,
             content,
             created_at: now,
             updated_at: now,
+            is_deleted: false,
+            deleted_at: None,
+            last_synced_at: None,
         }
     }
 }
