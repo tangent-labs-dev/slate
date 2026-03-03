@@ -190,11 +190,29 @@ pub fn App() -> impl IntoView {
     let (context_menu, set_context_menu) = signal::<Option<(String, i32, i32)>>(None);
     let (theme, set_theme) = signal(AppTheme::from_attr(&theme_pref));
     let (sidebar_collapsed, set_sidebar_collapsed) = signal(sidebar_pref == "1");
+    let (search_query, set_search_query) = signal(String::new());
 
     let sorted_notes = Memo::new(move |_| {
         let mut n = notes.get();
         n.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
         n
+    });
+
+    let filtered_notes = Memo::new(move |_| {
+        let query = search_query.get().trim().to_lowercase();
+        if query.is_empty() {
+            return sorted_notes.get();
+        }
+
+        sorted_notes
+            .get()
+            .into_iter()
+            .filter(|note| {
+                note.title.to_lowercase().contains(&query)
+                    || note.content.to_lowercase().contains(&query)
+                    || note.id.to_lowercase().contains(&query)
+            })
+            .collect::<Vec<_>>()
     });
 
     let active_note = Memo::new(move |_| {
@@ -511,6 +529,7 @@ pub fn App() -> impl IntoView {
                 }
                 .app[data-sidebar="collapsed"] .sidebar-title,
                 .app[data-sidebar="collapsed"] .primary-btn,
+                .app[data-sidebar="collapsed"] .search-wrap,
                 .app[data-sidebar="collapsed"] .notes-scroll {
                     display: none;
                 }
@@ -589,6 +608,25 @@ pub fn App() -> impl IntoView {
                     max-height: calc(100vh - 120px);
                     overflow: auto;
                     padding-right: 0.12rem;
+                }
+                .search-wrap {
+                    margin-bottom: 0.5rem;
+                }
+                .search-input {
+                    width: 100%;
+                    border: 1px solid var(--line);
+                    border-radius: 7px;
+                    background: var(--bg-alt);
+                    color: var(--text);
+                    font-size: 0.8rem;
+                    padding: 0.38rem 0.52rem;
+                }
+                .search-input::placeholder {
+                    color: var(--text-muted);
+                }
+                .search-input:focus {
+                    outline: none;
+                    border-color: color-mix(in srgb, var(--accent), transparent 45%);
                 }
                 .note-row {
                     display: block;
@@ -1081,9 +1119,19 @@ pub fn App() -> impl IntoView {
                         " New note"
                     </button>
 
+                    <div class="search-wrap">
+                        <input
+                            class="search-input"
+                            type="text"
+                            placeholder="Search notes..."
+                            prop:value=move || search_query.get()
+                            on:input=move |ev| set_search_query.set(event_target_value(&ev))
+                        />
+                    </div>
+
                     <div class="notes-scroll">
                         <For
-                            each=move || sorted_notes.get()
+                            each=move || filtered_notes.get()
                             key=|n| n.id.clone()
                             children=move |n: Note| {
                                 let id = n.id.clone();

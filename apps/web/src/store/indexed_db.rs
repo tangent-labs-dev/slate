@@ -81,4 +81,3 @@ pub async fn upsert_note(note: &Note) -> Result<(), JsValue> {
         .map_err(|e| JsValue::from_str(&format!("tx done failed: {e}")))?;
     Ok(())
 }
-
