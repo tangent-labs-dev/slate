@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 leptos = { version = "0.8.16", features = ["csr"] }
+pulldown-cmark = "0.13"
