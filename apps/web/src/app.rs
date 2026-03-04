@@ -1,10 +1,16 @@
 use crate::markdown::render_markdown;
 use crate::models::{EditorMode, Note, derive_title};
-use crate::store::indexed_db::{load_all_notes, upsert_note};
+use crate::links::normalize_title;
+use crate::note_graph::{
+    backlink_ids_for, build_title_index, closest_wiki_anchor, propagate_renamed_title,
+};
+use crate::store::{load_all_notes, upsert_note};
 use icondata::{BsChevronLeft, BsChevronRight, BsPlusLg, BsXLg};
 use js_sys::Date;
 use leptos::{ev::MouseEvent, prelude::*};
+use leptos::web_sys::Element;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen_futures::spawn_local;
 
@@ -191,10 +197,11 @@ pub fn App() -> impl IntoView {
     let (theme, set_theme) = signal(AppTheme::from_attr(&theme_pref));
     let (sidebar_collapsed, set_sidebar_collapsed) = signal(sidebar_pref == "1");
     let (search_query, set_search_query) = signal(String::new());
+    let (title_before_edit, set_title_before_edit) = signal::<Option<String>>(None);
 
     let sorted_notes = Memo::new(move |_| {
         let mut n = notes.get();
-        n.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
+        n.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         n
     });
 
@@ -223,11 +230,23 @@ pub fn App() -> impl IntoView {
             .find(|n| Some(n.id.as_str()) == id.as_deref())
     });
 
+    let title_index = Memo::new(move |_| build_title_index(&notes.get()));
+
+    let backlinks = Memo::new(move |_| {
+        if let Some(active) = active_note.get() {
+            let all_notes = notes.get();
+            backlink_ids_for(&all_notes, &active)
+        } else {
+            Vec::new()
+        }
+    });
+
     let preview_html = Memo::new(move |_| {
         if matches!(mode.get(), EditorMode::Preview | EditorMode::Split) {
+            let title_map = title_index.get();
             active_note
                 .get()
-                .map(|n| render_markdown(&n.content))
+                .map(|n| render_markdown(&n.content, &title_map))
                 .unwrap_or_default()
         } else {
             String::new()
@@ -279,7 +298,7 @@ pub fn App() -> impl IntoView {
                             loaded.push(starter);
                         }
 
-                        loaded.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
+                        loaded.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
                         let first_id = loaded[0].id.clone();
                         set_notes.set(loaded);
                         set_active_note_id.set(Some(first_id.clone()));
@@ -309,6 +328,35 @@ pub fn App() -> impl IntoView {
         set_open_tabs.update(|tabs| {
             if !tabs.iter().any(|t| t == &id) {
                 tabs.push(id);
+            }
+        });
+    };
+
+    let open_or_create_note = move |title: String| {
+        let wanted = title.trim().to_string();
+        if wanted.is_empty() {
+            return;
+        }
+        let wanted_norm = normalize_title(&wanted);
+        if let Some(existing) = notes
+            .get_untracked()
+            .into_iter()
+            .find(|n| normalize_title(&n.title) == wanted_norm)
+        {
+            open_note(existing.id);
+            return;
+        }
+
+        let new_note = Note::new(wanted, "");
+        let new_note_id = new_note.id.clone();
+        set_notes.update(|all| all.push(new_note.clone()));
+        open_note(new_note_id);
+        spawn_local({
+            let set_db_error = set_db_error.clone();
+            async move {
+                if let Err(e) = upsert_note(&new_note).await {
+                    set_db_error.set(Some(format!("{e:?}")));
+                }
             }
         });
     };
@@ -799,6 +847,44 @@ pub fn App() -> impl IntoView {
                 }
                 .title::placeholder { color: var(--text-muted); }
                 .title:focus { outline: none; }
+                .backlinks-wrap {
+                    margin: 0 0 0.9rem;
+                    border: 1px solid var(--line-soft);
+                    border-radius: 8px;
+                    padding: 0.55rem 0.65rem;
+                    background: color-mix(in srgb, var(--bg-alt), transparent 22%);
+                }
+                .backlinks-title {
+                    margin: 0 0 0.45rem;
+                    font-size: 0.72rem;
+                    text-transform: uppercase;
+                    letter-spacing: 0.04em;
+                    color: var(--text-muted);
+                    font-weight: 600;
+                }
+                .backlinks-list {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 0.35rem;
+                }
+                .backlink-item {
+                    border: 1px solid var(--line);
+                    border-radius: 999px;
+                    background: transparent;
+                    color: var(--preview-link);
+                    padding: 0.2rem 0.55rem;
+                    font-size: 0.78rem;
+                    cursor: pointer;
+                }
+                .backlink-item:hover {
+                    border-color: color-mix(in srgb, var(--preview-link), transparent 45%);
+                    background: color-mix(in srgb, var(--preview-link), transparent 88%);
+                }
+                .backlinks-empty {
+                    margin: 0;
+                    color: var(--text-muted);
+                    font-size: 0.78rem;
+                }
                 .panel {
                     border: none;
                     border-radius: 0;
@@ -884,6 +970,10 @@ pub fn App() -> impl IntoView {
                 .preview a {
                     color: var(--preview-link);
                     text-underline-offset: 3px;
+                }
+                .preview a.wiki-link.missing {
+                    opacity: 0.8;
+                    text-decoration-style: dashed;
                 }
                 .preview hr {
                     border: none;
@@ -1306,6 +1396,14 @@ pub fn App() -> impl IntoView {
                             prop:value=move || active_note.get().map(|n| n.title).unwrap_or_default()
                             on:input=move |ev| {
                                 if let Some(note_id) = active_note_id.get_untracked() {
+                                    if title_before_edit.get_untracked().is_none() {
+                                        let previous = notes
+                                            .get_untracked()
+                                            .into_iter()
+                                            .find(|n| n.id == note_id)
+                                            .map(|n| n.title);
+                                        set_title_before_edit.set(previous);
+                                    }
                                     let value = event_target_value(&ev);
                                     let now = Date::now();
                                     set_notes.update(|all| {
@@ -1319,10 +1417,72 @@ pub fn App() -> impl IntoView {
                             }
                             on:blur=move |_| {
                                 if let Some(note_id) = active_note_id.get_untracked() {
+                                    let old_title = title_before_edit.get_untracked();
+                                    let new_title = notes
+                                        .get_untracked()
+                                        .into_iter()
+                                        .find(|n| n.id == note_id)
+                                        .map(|n| n.title)
+                                        .unwrap_or_default();
+                                    if let Some(old) = old_title
+                                        && normalize_title(&old) != normalize_title(&new_title)
+                                    {
+                                        let mut changed = Vec::<Note>::new();
+                                        set_notes.update(|all| {
+                                            changed =
+                                                propagate_renamed_title(all, &old, &new_title);
+                                        });
+                                        if !changed.is_empty() {
+                                            spawn_local({
+                                                let set_db_error = set_db_error.clone();
+                                                async move {
+                                                    for note in changed {
+                                                        if let Err(e) = upsert_note(&note).await {
+                                                            set_db_error.set(Some(format!("{e:?}")));
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
                                     save_note(note_id);
                                 }
+                                set_title_before_edit.set(None);
                             }
                         />
+
+                        <div class="backlinks-wrap">
+                            <p class="backlinks-title">"Linked mentions"</p>
+                            <Show
+                                when=move || !backlinks.get().is_empty()
+                                fallback=move || view! { <p class="backlinks-empty">"No backlinks yet."</p> }
+                            >
+                                <div class="backlinks-list">
+                                    <For
+                                        each=move || backlinks.get()
+                                        key=|id| id.clone()
+                                        children=move |id: String| {
+                                            let id_for_open = id.clone();
+                                            let id_for_label = id.clone();
+                                            let label = move || {
+                                                notes
+                                                    .get()
+                                                    .into_iter()
+                                                    .find(|n| n.id == id_for_label)
+                                                    .map(|n| n.title)
+                                                    .unwrap_or_else(|| "Untitled".to_string())
+                                            };
+                                            view! {
+                                                <button class="backlink-item" on:click=move |_| open_note(id_for_open.clone())>
+                                                    {label}
+                                                </button>
+                                            }
+                                        }
+                                    />
+                                </div>
+                            </Show>
+                        </div>
 
                         <section class="panel">
                             <Show
@@ -1366,12 +1526,42 @@ pub fn App() -> impl IntoView {
                                                 </div>
                                                 <div class="live-pane">
                                                     <p class="live-pane-title">"Preview"</p>
-                                                    <article class="preview live-preview" inner_html=move || preview_html.get()></article>
+                                                    <article
+                                                        class="preview live-preview"
+                                                        on:click=move |ev: MouseEvent| {
+                                                            if let Some(target) = ev.target().and_then(|t| t.dyn_into::<Element>().ok())
+                                                                && let Some(anchor) = closest_wiki_anchor(target)
+                                                            {
+                                                                ev.prevent_default();
+                                                                if let Some(note_id) = anchor.get_attribute("data-note-id") {
+                                                                    open_note(note_id);
+                                                                } else if let Some(title) = anchor.get_attribute("data-note-title") {
+                                                                    open_or_create_note(title);
+                                                                }
+                                                            }
+                                                        }
+                                                        inner_html=move || preview_html.get()
+                                                    ></article>
                                                 </div>
                                             </div>
                                         }
                                     >
-                                        <article class="preview" inner_html=move || preview_html.get()></article>
+                                        <article
+                                            class="preview"
+                                            on:click=move |ev: MouseEvent| {
+                                                if let Some(target) = ev.target().and_then(|t| t.dyn_into::<Element>().ok())
+                                                    && let Some(anchor) = closest_wiki_anchor(target)
+                                                {
+                                                    ev.prevent_default();
+                                                    if let Some(note_id) = anchor.get_attribute("data-note-id") {
+                                                        open_note(note_id);
+                                                    } else if let Some(title) = anchor.get_attribute("data-note-title") {
+                                                        open_or_create_note(title);
+                                                    }
+                                                }
+                                            }
+                                            inner_html=move || preview_html.get()
+                                        ></article>
                                     </Show>
                                 }
                             >

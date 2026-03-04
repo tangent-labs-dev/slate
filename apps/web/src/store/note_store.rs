@@ -1,18 +1,7 @@
 use crate::models::Note;
-use rexie::{ObjectStore, Rexie, TransactionMode};
+use crate::store::db::{NOTES_STORE, open_db};
+use rexie::TransactionMode;
 use wasm_bindgen::JsValue;
-
-const DB_NAME: &str = "slate-db";
-const NOTES_STORE: &str = "notes";
-
-async fn open_db() -> Result<Rexie, JsValue> {
-    Rexie::builder(DB_NAME)
-        .version(1)
-        .add_object_store(ObjectStore::new(NOTES_STORE).key_path("id"))
-        .build()
-        .await
-        .map_err(|e| JsValue::from_str(&format!("open_db failed: {e}")))
-}
 
 pub async fn load_all_notes() -> Result<Vec<Note>, JsValue> {
     let db = open_db().await?;
@@ -41,7 +30,7 @@ pub async fn load_all_notes() -> Result<Vec<Note>, JsValue> {
         }
     }
 
-    notes.sort_by(|a, b| b.updated_at.total_cmp(&a.updated_at));
+    notes.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
     Ok(notes)
 }
 

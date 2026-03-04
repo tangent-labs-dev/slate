@@ -1,6 +1,8 @@
 mod app;
+mod links;
 mod markdown;
 mod models;
+mod note_graph;
 mod store;
 
 use leptos::prelude::*;
