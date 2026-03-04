@@ -1,3 +1,7 @@
 [workspace]
 members = ["apps/web"]
 resolver = "2"
+
+
+[toolchain]
+channel = "stable"
