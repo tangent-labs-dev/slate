@@ -5,6 +5,8 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MediaAsset {
     pub id: String,
+    #[serde(default)]
+    pub storage_path: String,
     pub note_id: String,
     pub filename: String,
     pub mime_type: String,
@@ -21,8 +23,10 @@ impl MediaAsset {
         data: Vec<u8>,
     ) -> Self {
         let size_bytes = data.len() as u64;
+        let id = Uuid::new_v4().to_string();
         Self {
-            id: Uuid::new_v4().to_string(),
+            storage_path: format!("uploads/{id}"),
+            id,
             note_id: note_id.into(),
             filename: filename.into(),
             mime_type: mime_type.into(),

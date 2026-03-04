@@ -28,20 +28,27 @@ pub fn resolve_slate_media_urls(html: &str, media_url_index: &HashMap<String, St
     while let Some(found) = html[cursor..].find(SLATE_MEDIA_SCHEME) {
         let scheme_start = cursor + found;
         out.push_str(&html[cursor..scheme_start]);
-        let id_start = scheme_start + SLATE_MEDIA_SCHEME.len();
-        let mut id_end = id_start;
-        while id_end < html.len() && is_media_id_char(html.as_bytes()[id_end] as char) {
-            id_end += 1;
+        let key_start = scheme_start + SLATE_MEDIA_SCHEME.len();
+        let mut key_end = key_start;
+        while key_end < html.len() && is_media_key_char(html.as_bytes()[key_end] as char) {
+            key_end += 1;
         }
 
-        let media_id = &html[id_start..id_end];
-        if let Some(url) = media_url_index.get(media_id) {
+        let media_key = &html[key_start..key_end];
+        if let Some(url) = media_url_index.get(media_key) {
             out.push_str(url);
+        } else if let Some(asset_id) = asset_id_from_media_key(media_key) {
+            if let Some(url) = media_url_index.get(&asset_id) {
+                out.push_str(url);
+            } else {
+                out.push_str(SLATE_MEDIA_SCHEME);
+                out.push_str(media_key);
+            }
         } else {
             out.push_str(SLATE_MEDIA_SCHEME);
-            out.push_str(media_id);
+            out.push_str(media_key);
         }
-        cursor = id_end;
+        cursor = key_end;
     }
 
     out.push_str(&html[cursor..]);
@@ -98,15 +105,18 @@ pub fn collect_slate_media_ids(markdown: &str) -> Vec<String> {
     let mut cursor = 0;
 
     while let Some(found) = markdown[cursor..].find(SLATE_MEDIA_SCHEME) {
-        let id_start = cursor + found + SLATE_MEDIA_SCHEME.len();
-        let mut id_end = id_start;
-        while id_end < markdown.len() && is_media_id_char(markdown.as_bytes()[id_end] as char) {
-            id_end += 1;
+        let key_start = cursor + found + SLATE_MEDIA_SCHEME.len();
+        let mut key_end = key_start;
+        while key_end < markdown.len() && is_media_key_char(markdown.as_bytes()[key_end] as char) {
+            key_end += 1;
         }
-        if id_end > id_start {
-            ids.push(markdown[id_start..id_end].to_string());
+        if key_end > key_start {
+            let key = &markdown[key_start..key_end];
+            if let Some(asset_id) = asset_id_from_media_key(key) {
+                ids.push(asset_id);
+            }
         }
-        cursor = id_end;
+        cursor = key_end;
     }
 
     ids.sort();
@@ -164,8 +174,24 @@ fn escape_html(input: &str) -> String {
     out
 }
 
-fn is_media_id_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')
+fn is_media_key_char(ch: char) -> bool {
+    !matches!(ch, '"' | '\'' | ')' | ' ' | '\n' | '\r' | '\t' | '<' | '>')
+}
+
+fn asset_id_from_media_key(key: &str) -> Option<String> {
+    if key.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = key.strip_prefix("uploads/") {
+        let id = rest.split('/').next().unwrap_or_default().trim();
+        if id.is_empty() {
+            return None;
+        }
+        return Some(id.to_string());
+    }
+
+    Some(key.to_string())
 }
 
 fn extract_attr<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str> {
@@ -249,7 +275,7 @@ mod tests {
 
     #[test]
     fn collects_unique_media_ids_from_markdown() {
-        let input = "![img](slate-media://abc)\n<video src=\"slate-media://def\"></video>\n![dup](slate-media://abc)";
+        let input = "![img](slate-media://uploads/abc)\n<video src=\"slate-media://uploads/def\"></video>\n![dup](slate-media://uploads/abc)";
         let ids = collect_slate_media_ids(input);
         assert_eq!(ids, vec!["abc".to_string(), "def".to_string()]);
     }
@@ -257,11 +283,15 @@ mod tests {
     #[test]
     fn resolves_media_urls_when_available() {
         let mut index = HashMap::new();
-        index.insert("abc".to_string(), "blob:https://local/1".to_string());
-        let html = r#"<img src="slate-media://abc"><img src="slate-media://missing">"#;
+        index.insert(
+            "uploads/abc".to_string(),
+            "blob:https://local/1".to_string(),
+        );
+        let html =
+            r#"<img src="slate-media://uploads/abc"><img src="slate-media://uploads/missing">"#;
         let resolved = resolve_slate_media_urls(html, &index);
         assert!(resolved.contains("blob:https://local/1"));
-        assert!(resolved.contains("slate-media://missing"));
+        assert!(resolved.contains("slate-media://uploads/missing"));
     }
 
     #[test]
