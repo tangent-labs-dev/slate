@@ -1,14 +1,19 @@
-use crate::markdown::render_markdown;
-use crate::models::{EditorMode, Note, derive_title};
 use crate::links::normalize_title;
+use crate::markdown::{
+    collect_slate_media_ids, render_markdown, resolve_slate_media_urls, rewrite_video_image_tags,
+};
+use crate::models::{EditorMode, MediaAsset, Note, derive_title};
 use crate::note_graph::{
     backlink_ids_for, build_title_index, closest_wiki_anchor, propagate_renamed_title,
 };
-use crate::store::{load_all_notes, upsert_note};
+use crate::store::{
+    delete_media_assets_by_ids, load_all_media_assets, load_all_notes, upsert_media_asset,
+    upsert_note,
+};
 use icondata::{BsChevronLeft, BsChevronRight, BsPlusLg, BsXLg};
-use js_sys::Date;
+use js_sys::{Date, Uint8Array};
+use leptos::web_sys::{Element, HtmlInputElement};
 use leptos::{ev::MouseEvent, prelude::*};
-use leptos::web_sys::Element;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -141,6 +146,30 @@ export function ui_pref_set(key, value) {
     globalThis.localStorage?.setItem(`slate.ui.${key}`, value);
   } catch {}
 }
+
+export function ui_prompt(message, defaultValue = '') {
+  const value = globalThis.prompt(message, defaultValue);
+  return value ?? '';
+}
+
+export function click_by_id(id) {
+  const node = document.getElementById(id);
+  if (node instanceof HTMLInputElement) {
+    node.click();
+  }
+}
+
+export function media_create_object_url(bytes, mimeType) {
+  const typed = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const blob = new Blob([typed], { type: mimeType || 'application/octet-stream' });
+  return URL.createObjectURL(blob);
+}
+
+export function media_revoke_object_url(url) {
+  if (url) {
+    URL.revokeObjectURL(url);
+  }
+}
 "#)]
 extern "C" {
     fn highlight_markdown_code();
@@ -148,6 +177,10 @@ extern "C" {
     fn init_sidebar_resizer();
     fn ui_pref_get(key: &str) -> String;
     fn ui_pref_set(key: &str, value: &str);
+    fn ui_prompt(message: &str, default_value: &str) -> String;
+    fn click_by_id(id: &str);
+    fn media_create_object_url(bytes: &[u8], mime_type: &str) -> String;
+    fn media_revoke_object_url(url: &str);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -194,6 +227,118 @@ fn mode_from_pref(value: &str) -> EditorMode {
     }
 }
 
+const IMAGE_UPLOAD_INPUT_ID: &str = "media-upload-image";
+const VIDEO_UPLOAD_INPUT_ID: &str = "media-upload-video";
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_VIDEO_BYTES: usize = 100 * 1024 * 1024;
+
+fn is_safe_remote_url(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
+}
+
+fn escape_html_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn normalize_video_url(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if !is_safe_remote_url(trimmed) {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn youtube_embed_src(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("youtube.com/watch?v=") {
+        let marker = "watch?v=";
+        let start = lower.find(marker)? + marker.len();
+        let id = &url[start..];
+        let id = id.split('&').next()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        return Some(format!("https://www.youtube.com/embed/{id}"));
+    }
+    if lower.contains("youtu.be/") {
+        let marker = "youtu.be/";
+        let start = lower.find(marker)? + marker.len();
+        let id = &url[start..];
+        let id = id.split('?').next()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        return Some(format!("https://www.youtube.com/embed/{id}"));
+    }
+    if lower.contains("youtube.com/embed/") {
+        return Some(url.to_string());
+    }
+    None
+}
+
+fn vimeo_embed_src(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if !lower.contains("vimeo.com/") {
+        return None;
+    }
+
+    if let Some(pos) = lower.find("player.vimeo.com/video/") {
+        let start = pos + "player.vimeo.com/video/".len();
+        let id = &url[start..];
+        let id = id.split('?').next()?.trim();
+        if id.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(format!("https://player.vimeo.com/video/{id}"));
+        }
+    }
+
+    let marker = "vimeo.com/";
+    let start = lower.find(marker)? + marker.len();
+    let id = &url[start..];
+    let id = id.split('?').next()?.trim();
+    if id.chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(format!("https://player.vimeo.com/video/{id}"));
+    }
+    None
+}
+
+fn video_embed_markdown(url: &str) -> Option<String> {
+    let normalized = normalize_video_url(url)?;
+    if let Some(embed) = youtube_embed_src(&normalized).or_else(|| vimeo_embed_src(&normalized)) {
+        let safe_src = escape_html_attr(&embed);
+        return Some(format!(
+            r#"<iframe class="video-embed" src="{safe_src}" title="Embedded video" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>"#
+        ));
+    }
+
+    let safe_src = escape_html_attr(&normalized);
+    Some(format!(r#"<video controls src="{safe_src}"></video>"#))
+}
+
+fn image_markdown(url: &str) -> Option<String> {
+    let normalized = url.trim();
+    if !is_safe_remote_url(normalized) {
+        return None;
+    }
+    if !looks_like_image_url(normalized) {
+        return None;
+    }
+    Some(format!("![Image]({normalized})"))
+}
+
+fn looks_like_image_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif",
+    ]
+    .iter()
+    .any(|ext| lower.contains(ext))
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let theme_pref = ui_pref_get("theme");
@@ -210,6 +355,9 @@ pub fn App() -> impl IntoView {
     let (sidebar_collapsed, set_sidebar_collapsed) = signal(sidebar_pref == "1");
     let (search_query, set_search_query) = signal(String::new());
     let (title_before_edit, set_title_before_edit) = signal::<Option<String>>(None);
+    let (media_assets, set_media_assets) = signal::<Vec<MediaAsset>>(vec![]);
+    let (media_url_index, set_media_url_index) =
+        signal::<std::collections::HashMap<String, String>>(std::collections::HashMap::new());
 
     let sorted_notes = Memo::new(move |_| {
         let mut n = notes.get();
@@ -256,9 +404,14 @@ pub fn App() -> impl IntoView {
     let preview_html = Memo::new(move |_| {
         if matches!(mode.get(), EditorMode::Preview | EditorMode::Split) {
             let title_map = title_index.get();
+            let urls = media_url_index.get();
             active_note
                 .get()
-                .map(|n| render_markdown(&n.content, &title_map))
+                .map(|n| {
+                    let rendered = render_markdown(&n.content, &title_map);
+                    let resolved = resolve_slate_media_urls(&rendered, &urls);
+                    rewrite_video_image_tags(&resolved)
+                })
                 .unwrap_or_default()
         } else {
             String::new()
@@ -304,6 +457,8 @@ pub fn App() -> impl IntoView {
             let set_active_note_id = set_active_note_id.clone();
             let set_open_tabs = set_open_tabs.clone();
             let set_db_error = set_db_error.clone();
+            let set_media_assets = set_media_assets.clone();
+            let set_media_url_index = set_media_url_index.clone();
 
             async move {
                 match load_all_notes().await {
@@ -367,6 +522,25 @@ fn hello(name: &str) -> String {
 
 Click wiki links in Preview to open the target note (or create it if missing).
 
+### Media (images + videos)
+
+Use the toolbar buttons (`Image URL`, `Upload Image`, `Video URL`, `Upload Video`) while editing.
+
+#### Image example (direct image file URL)
+
+![Slate image example](https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/React-icon.svg/512px-React-icon.svg.png)
+
+#### Video example (YouTube URL auto-embeds)
+
+![YouTube video](https://www.youtube.com/watch?v=ysz5S6PUM-U)
+
+#### Local upload syntax (inserted automatically after upload)
+
+```md
+![My uploaded image](slate-media://asset-id)
+<video controls src="slate-media://asset-id"></video>
+```
+
 ## App features
 
 - Raw, Preview, and Split editor modes
@@ -392,6 +566,19 @@ Happy writing and linking.
                         set_notes.set(loaded);
                         set_active_note_id.set(Some(first_id.clone()));
                         set_open_tabs.set(vec![first_id]);
+                    }
+                    Err(e) => set_db_error.set(Some(format!("{e:?}"))),
+                }
+
+                match load_all_media_assets().await {
+                    Ok(loaded_assets) => {
+                        let mut urls = std::collections::HashMap::new();
+                        for asset in &loaded_assets {
+                            let object_url = media_create_object_url(&asset.data, &asset.mime_type);
+                            urls.insert(asset.id.clone(), object_url);
+                        }
+                        set_media_assets.set(loaded_assets);
+                        set_media_url_index.set(urls);
                     }
                     Err(e) => set_db_error.set(Some(format!("{e:?}"))),
                 }
@@ -472,6 +659,44 @@ Happy writing and linking.
         }
     };
 
+    let cleanup_orphaned_media = move || {
+        let all_notes = notes.get_untracked();
+        let referenced_ids = all_notes
+            .iter()
+            .flat_map(|note| collect_slate_media_ids(&note.content))
+            .collect::<std::collections::HashSet<_>>();
+
+        let orphan_ids = media_assets
+            .get_untracked()
+            .into_iter()
+            .filter(|asset| !referenced_ids.contains(&asset.id))
+            .map(|asset| asset.id)
+            .collect::<Vec<_>>();
+
+        if orphan_ids.is_empty() {
+            return;
+        }
+
+        set_media_assets.update(|all| all.retain(|asset| !orphan_ids.contains(&asset.id)));
+
+        let mut url_index = media_url_index.get_untracked();
+        for orphan_id in &orphan_ids {
+            if let Some(url) = url_index.remove(orphan_id) {
+                media_revoke_object_url(&url);
+            }
+        }
+        set_media_url_index.set(url_index);
+
+        spawn_local({
+            let set_db_error = set_db_error.clone();
+            async move {
+                if let Err(e) = delete_media_assets_by_ids(&orphan_ids).await {
+                    set_db_error.set(Some(format!("{e:?}")));
+                }
+            }
+        });
+    };
+
     let delete_note_by_id = move |id: String| {
         let now = Date::now();
         let tombstone = notes
@@ -508,6 +733,8 @@ Happy writing and linking.
                 }
             });
         }
+
+        cleanup_orphaned_media();
     };
 
     let duplicate_note = move |id: String| {
@@ -526,6 +753,167 @@ Happy writing and linking.
                 }
             });
         }
+    };
+
+    let append_media_snippet = move |snippet: String| {
+        if let Some(note_id) = active_note_id.get_untracked() {
+            let now = Date::now();
+            set_notes.update(|all| {
+                if let Some(note) = all.iter_mut().find(|note| note.id == note_id) {
+                    if !note.content.ends_with('\n') {
+                        note.content.push('\n');
+                    }
+                    note.content.push_str(&snippet);
+                    note.content.push('\n');
+                    note.updated_at = now;
+                }
+            });
+            auto_resize_editors();
+            save_note(note_id);
+        }
+    };
+
+    let insert_image_by_url = move || {
+        let input = ui_prompt("Image URL", "https://");
+        if input.trim().is_empty() {
+            return;
+        }
+        match image_markdown(&input) {
+            Some(snippet) => append_media_snippet(snippet),
+            None => set_db_error.set(Some(
+                "Use a direct image URL ending in .png/.jpg/.jpeg/.gif/.webp/.svg/.bmp/.avif"
+                    .to_string(),
+            )),
+        }
+    };
+
+    let insert_video_by_url = move || {
+        let input = ui_prompt(
+            "Video URL (YouTube/Vimeo links can embed as iframe)",
+            "https://",
+        );
+        if input.trim().is_empty() {
+            return;
+        }
+        match video_embed_markdown(&input) {
+            Some(snippet) => append_media_snippet(snippet),
+            None => set_db_error.set(Some(
+                "Invalid video URL. Use a valid http/https URL.".to_string(),
+            )),
+        }
+    };
+
+    let on_image_upload = move |ev| {
+        let input = event_target::<HtmlInputElement>(&ev);
+        let file = input.files().and_then(|files| files.get(0));
+        input.set_value("");
+        let Some(file) = file else { return };
+        let Some(note_id) = active_note_id.get_untracked() else {
+            set_db_error.set(Some("Open a note before uploading media.".to_string()));
+            return;
+        };
+
+        let mime = file.type_();
+        if !mime.starts_with("image/") {
+            set_db_error.set(Some("Only image files are allowed here.".to_string()));
+            return;
+        }
+        if file.size() > MAX_IMAGE_BYTES as f64 {
+            set_db_error.set(Some("Image is too large (max 10MB).".to_string()));
+            return;
+        }
+
+        let filename = file.name();
+        spawn_local({
+            let set_db_error = set_db_error.clone();
+            let set_media_assets = set_media_assets.clone();
+            let set_media_url_index = set_media_url_index.clone();
+            async move {
+                let bytes = match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+                    Ok(buffer) => {
+                        let array = Uint8Array::new(&buffer);
+                        let mut data = vec![0; array.length() as usize];
+                        array.copy_to(&mut data);
+                        data
+                    }
+                    Err(e) => {
+                        set_db_error.set(Some(format!("Failed to read image: {e:?}")));
+                        return;
+                    }
+                };
+
+                let asset = MediaAsset::new(note_id, filename.clone(), mime.clone(), bytes);
+                if let Err(e) = upsert_media_asset(&asset).await {
+                    set_db_error.set(Some(format!("{e:?}")));
+                    return;
+                }
+
+                let object_url = media_create_object_url(&asset.data, &asset.mime_type);
+                set_media_assets.update(|all| all.push(asset.clone()));
+                set_media_url_index.update(|index| {
+                    index.insert(asset.id.clone(), object_url);
+                });
+                append_media_snippet(format!("![{}](slate-media://{})", filename, asset.id));
+            }
+        });
+    };
+
+    let on_video_upload = move |ev| {
+        let input = event_target::<HtmlInputElement>(&ev);
+        let file = input.files().and_then(|files| files.get(0));
+        input.set_value("");
+        let Some(file) = file else { return };
+        let Some(note_id) = active_note_id.get_untracked() else {
+            set_db_error.set(Some("Open a note before uploading media.".to_string()));
+            return;
+        };
+
+        let mime = file.type_();
+        if !mime.starts_with("video/") {
+            set_db_error.set(Some("Only video files are allowed here.".to_string()));
+            return;
+        }
+        if file.size() > MAX_VIDEO_BYTES as f64 {
+            set_db_error.set(Some("Video is too large (max 100MB).".to_string()));
+            return;
+        }
+
+        let filename = file.name();
+        spawn_local({
+            let set_db_error = set_db_error.clone();
+            let set_media_assets = set_media_assets.clone();
+            let set_media_url_index = set_media_url_index.clone();
+            async move {
+                let bytes = match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+                    Ok(buffer) => {
+                        let array = Uint8Array::new(&buffer);
+                        let mut data = vec![0; array.length() as usize];
+                        array.copy_to(&mut data);
+                        data
+                    }
+                    Err(e) => {
+                        set_db_error.set(Some(format!("Failed to read video: {e:?}")));
+                        return;
+                    }
+                };
+
+                let asset = MediaAsset::new(note_id, filename.clone(), mime.clone(), bytes);
+                if let Err(e) = upsert_media_asset(&asset).await {
+                    set_db_error.set(Some(format!("{e:?}")));
+                    return;
+                }
+
+                let object_url = media_create_object_url(&asset.data, &asset.mime_type);
+                set_media_assets.update(|all| all.push(asset.clone()));
+                set_media_url_index.update(|index| {
+                    index.insert(asset.id.clone(), object_url);
+                });
+                append_media_snippet(format!(
+                    r#"<video controls src="slate-media://{}"></video>"#,
+                    asset.id
+                ));
+            }
+        });
     };
 
     view! {
@@ -816,6 +1204,11 @@ Happy writing and linking.
                     font-weight: 600;
                 }
                 .mode-switch { display: inline-flex; gap: 0.24rem; }
+                .media-actions {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 0.24rem;
+                }
                 .mode-btn {
                     border: 1px solid transparent;
                     background: transparent;
@@ -831,6 +1224,7 @@ Happy writing and linking.
                     background: var(--bg-tab);
                     color: var(--text);
                 }
+                .media-hidden-input { display: none; }
                 .theme-select {
                     border: 1px solid var(--line);
                     background: var(--bg-tab);
@@ -1131,6 +1525,17 @@ Happy writing and linking.
                     max-width: 100%;
                     border-radius: 8px;
                 }
+                .preview video,
+                .preview iframe {
+                    display: block;
+                    width: min(100%, 960px);
+                    margin: 0.75rem auto;
+                    aspect-ratio: 16 / 9;
+                    height: auto;
+                    border: 1px solid var(--line-soft);
+                    border-radius: 8px;
+                    background: #000;
+                }
                 .preview pre code.hljs,
                 .preview code.hljs {
                     color: var(--hljs-base);
@@ -1381,6 +1786,20 @@ Happy writing and linking.
                             "Split"
                         </button>
                     </div>
+                    <div class="media-actions">
+                        <button class="mode-btn" on:click=move |_| insert_image_by_url()>
+                            "Image URL"
+                        </button>
+                        <button class="mode-btn" on:click=move |_| click_by_id(IMAGE_UPLOAD_INPUT_ID)>
+                            "Upload Image"
+                        </button>
+                        <button class="mode-btn" on:click=move |_| insert_video_by_url()>
+                            "Video URL"
+                        </button>
+                        <button class="mode-btn" on:click=move |_| click_by_id(VIDEO_UPLOAD_INPUT_ID)>
+                            "Upload Video"
+                        </button>
+                    </div>
                     <select
                         class="theme-select"
                         title="Select theme"
@@ -1403,6 +1822,20 @@ Happy writing and linking.
                         </option>
                     </select>
                 </div>
+                <input
+                    id=IMAGE_UPLOAD_INPUT_ID
+                    class="media-hidden-input"
+                    type="file"
+                    accept="image/*"
+                    on:change=on_image_upload
+                />
+                <input
+                    id=VIDEO_UPLOAD_INPUT_ID
+                    class="media-hidden-input"
+                    type="file"
+                    accept="video/*"
+                    on:change=on_video_upload
+                />
 
                 <div class="tabstrip">
                     <div class="tabstrip-inner">
@@ -1610,6 +2043,7 @@ Happy writing and linking.
                                                             if let Some(note_id) = active_note_id.get_untracked() {
                                                                 save_note(note_id);
                                                             }
+                                                            cleanup_orphaned_media();
                                                         }
                                                         spellcheck="false"
                                                     />
@@ -1682,6 +2116,7 @@ Happy writing and linking.
                                         if let Some(note_id) = active_note_id.get_untracked() {
                                             save_note(note_id);
                                         }
+                                        cleanup_orphaned_media();
                                     }
                                     spellcheck="false"
                                 />

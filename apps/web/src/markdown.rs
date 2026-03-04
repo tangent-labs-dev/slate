@@ -2,6 +2,8 @@ use crate::links::{link_target_base, normalize_title, parse_wiki_links};
 use pulldown_cmark::{Options, Parser, html};
 use std::collections::HashMap;
 
+pub const SLATE_MEDIA_SCHEME: &str = "slate-media://";
+
 pub fn render_markdown(input: &str, note_title_index: &HashMap<String, String>) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -13,6 +15,103 @@ pub fn render_markdown(input: &str, note_title_index: &HashMap<String, String>) 
     let mut out = String::new();
     html::push_html(&mut out, parser);
     out
+}
+
+pub fn resolve_slate_media_urls(html: &str, media_url_index: &HashMap<String, String>) -> String {
+    if !html.contains(SLATE_MEDIA_SCHEME) || media_url_index.is_empty() {
+        return html.to_string();
+    }
+
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0;
+
+    while let Some(found) = html[cursor..].find(SLATE_MEDIA_SCHEME) {
+        let scheme_start = cursor + found;
+        out.push_str(&html[cursor..scheme_start]);
+        let id_start = scheme_start + SLATE_MEDIA_SCHEME.len();
+        let mut id_end = id_start;
+        while id_end < html.len() && is_media_id_char(html.as_bytes()[id_end] as char) {
+            id_end += 1;
+        }
+
+        let media_id = &html[id_start..id_end];
+        if let Some(url) = media_url_index.get(media_id) {
+            out.push_str(url);
+        } else {
+            out.push_str(SLATE_MEDIA_SCHEME);
+            out.push_str(media_id);
+        }
+        cursor = id_end;
+    }
+
+    out.push_str(&html[cursor..]);
+    out
+}
+
+pub fn rewrite_video_image_tags(html: &str) -> String {
+    if !html.contains("<img") {
+        return html.to_string();
+    }
+
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0;
+
+    while let Some(found) = html[cursor..].find("<img") {
+        let tag_start = cursor + found;
+        out.push_str(&html[cursor..tag_start]);
+
+        let Some(relative_tag_end) = html[tag_start..].find('>') else {
+            out.push_str(&html[tag_start..]);
+            return out;
+        };
+        let tag_end = tag_start + relative_tag_end + 1;
+        let tag = &html[tag_start..tag_end];
+        let src = extract_attr(tag, "src");
+
+        if let Some(src) = src {
+            if let Some(embed) = video_embed_src(src) {
+                out.push_str(&format!(
+                    r#"<iframe class="video-embed" src="{embed}" title="Embedded video" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>"#
+                ));
+            } else if is_direct_video_url(src) {
+                out.push_str(&format!(r#"<video controls src="{src}"></video>"#));
+            } else {
+                out.push_str(tag);
+            }
+        } else {
+            out.push_str(tag);
+        }
+
+        cursor = tag_end;
+    }
+
+    out.push_str(&html[cursor..]);
+    out
+}
+
+pub fn collect_slate_media_ids(markdown: &str) -> Vec<String> {
+    if !markdown.contains(SLATE_MEDIA_SCHEME) {
+        return Vec::new();
+    }
+
+    let mut ids = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(found) = markdown[cursor..].find(SLATE_MEDIA_SCHEME) {
+        let id_start = cursor + found + SLATE_MEDIA_SCHEME.len();
+        let mut id_end = id_start;
+        while id_end < markdown.len() && is_media_id_char(markdown.as_bytes()[id_end] as char) {
+            id_end += 1;
+        }
+        if id_end > id_start {
+            ids.push(markdown[id_start..id_end].to_string());
+        }
+        cursor = id_end;
+    }
+
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 fn rewrite_wiki_links(input: &str, note_title_index: &HashMap<String, String>) -> String {
@@ -63,4 +162,113 @@ fn escape_html(input: &str) -> String {
         }
     }
     out
+}
+
+fn is_media_id_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')
+}
+
+fn extract_attr<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str> {
+    let marker = format!(r#"{attr_name}=""#);
+    let start = tag.find(&marker)? + marker.len();
+    let rest = &tag[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+fn video_embed_src(url: &str) -> Option<String> {
+    if let Some(embed) = youtube_embed_src(url) {
+        return Some(embed);
+    }
+    vimeo_embed_src(url)
+}
+
+fn youtube_embed_src(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.contains("youtube.com/watch?v=") {
+        let marker = "watch?v=";
+        let start = lower.find(marker)? + marker.len();
+        let id = &url[start..];
+        let id = id.split('&').next()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        return Some(format!("https://www.youtube.com/embed/{id}"));
+    }
+    if lower.contains("youtu.be/") {
+        let marker = "youtu.be/";
+        let start = lower.find(marker)? + marker.len();
+        let id = &url[start..];
+        let id = id.split('?').next()?.trim();
+        if id.is_empty() {
+            return None;
+        }
+        return Some(format!("https://www.youtube.com/embed/{id}"));
+    }
+    if lower.contains("youtube.com/embed/") {
+        return Some(url.to_string());
+    }
+    None
+}
+
+fn vimeo_embed_src(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if !lower.contains("vimeo.com/") {
+        return None;
+    }
+
+    if let Some(pos) = lower.find("player.vimeo.com/video/") {
+        let start = pos + "player.vimeo.com/video/".len();
+        let id = &url[start..];
+        let id = id.split('?').next()?.trim();
+        if id.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(format!("https://player.vimeo.com/video/{id}"));
+        }
+    }
+
+    let marker = "vimeo.com/";
+    let start = lower.find(marker)? + marker.len();
+    let id = &url[start..];
+    let id = id.split('?').next()?.trim();
+    if id.chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(format!("https://player.vimeo.com/video/{id}"));
+    }
+    None
+}
+
+fn is_direct_video_url(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    [".mp4", ".webm", ".mov", ".ogg", ".m4v"]
+        .iter()
+        .any(|ext| lower.contains(ext))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collects_unique_media_ids_from_markdown() {
+        let input = "![img](slate-media://abc)\n<video src=\"slate-media://def\"></video>\n![dup](slate-media://abc)";
+        let ids = collect_slate_media_ids(input);
+        assert_eq!(ids, vec!["abc".to_string(), "def".to_string()]);
+    }
+
+    #[test]
+    fn resolves_media_urls_when_available() {
+        let mut index = HashMap::new();
+        index.insert("abc".to_string(), "blob:https://local/1".to_string());
+        let html = r#"<img src="slate-media://abc"><img src="slate-media://missing">"#;
+        let resolved = resolve_slate_media_urls(html, &index);
+        assert!(resolved.contains("blob:https://local/1"));
+        assert!(resolved.contains("slate-media://missing"));
+    }
+
+    #[test]
+    fn rewrites_youtube_img_to_iframe() {
+        let html = r#"<p><img src="https://www.youtube.com/watch?v=abc123" alt="yt"></p>"#;
+        let rewritten = rewrite_video_image_tags(html);
+        assert!(rewritten.contains("<iframe"));
+        assert!(rewritten.contains("youtube.com/embed/abc123"));
+    }
 }
