@@ -70,6 +70,17 @@ export function highlight_markdown_code() {
   });
 }
 
+export function auto_resize_editors() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.editor').forEach((el) => {
+      if (!(el instanceof HTMLTextAreaElement)) return;
+      el.style.height = 'auto';
+      el.style.overflowY = 'hidden';
+      el.style.height = `${el.scrollHeight}px`;
+    });
+  });
+}
+
 export function init_sidebar_resizer() {
   const app = document.querySelector('.app');
   if (!app || app.dataset.sidebarResizeInit === '1') return;
@@ -133,6 +144,7 @@ export function ui_pref_set(key, value) {
 "#)]
 extern "C" {
     fn highlight_markdown_code();
+    fn auto_resize_editors();
     fn init_sidebar_resizer();
     fn ui_pref_get(key: &str) -> String;
     fn ui_pref_set(key: &str, value: &str);
@@ -261,6 +273,12 @@ pub fn App() -> impl IntoView {
     });
 
     Effect::new(move |_| {
+        let _ = mode.get();
+        let _ = active_note_id.get();
+        auto_resize_editors();
+    });
+
+    Effect::new(move |_| {
         init_sidebar_resizer();
     });
 
@@ -291,7 +309,78 @@ pub fn App() -> impl IntoView {
                 match load_all_notes().await {
                     Ok(mut loaded) => {
                         if loaded.is_empty() {
-                            let starter = Note::new("Welcome", "# Welcome\n\nStart writing.");
+                            let starter = Note::new(
+                                "Welcome",
+                                r#"# Welcome to Slate
+
+Slate is a local-first note app with markdown editing and Obsidian-style wiki links.
+
+## Notes features showcase
+
+### Headings and emphasis
+
+Use headings, **bold**, *italic*, and ~~strikethrough~~.
+
+### Lists
+
+- Bullet item
+- Another item
+  - Nested bullet
+
+1. Numbered item
+2. Another numbered item
+
+### Tasks
+
+- [x] Build wiki links
+- [ ] Add graph view later
+
+### Quote
+
+> Notes are only useful if you can find and connect them later.
+
+### Code block
+
+```rust
+fn hello(name: &str) -> String {
+    format!("Hello, {name}!")
+}
+```
+
+### Table
+
+| Feature | Supported |
+| --- | --- |
+| Markdown preview | Yes |
+| Wiki links | Yes |
+| Backlinks | Yes |
+
+### Horizontal rule
+
+---
+
+### Wiki links
+
+- Basic link: [[Project Ideas]]
+- Alias link: [[Project Ideas|Ideas]]
+- Link with heading: [[Project Ideas#Next Steps]]
+
+Click wiki links in Preview to open the target note (or create it if missing).
+
+## App features
+
+- Raw, Preview, and Split editor modes
+- Multi-tab notes
+- Search by title/content
+- Backlinks in "Linked mentions"
+- Auto-update wiki links when a note is renamed
+- Duplicate/delete notes from context menu
+- Resizable/collapsible sidebar
+- Theme switcher
+
+Happy writing and linking.
+"#,
+                            );
                             if let Err(e) = upsert_note(&starter).await {
                                 set_db_error.set(Some(format!("{e:?}")));
                             }
@@ -919,7 +1008,7 @@ pub fn App() -> impl IntoView {
                 .editor {
                     width: 100%;
                     min-height: calc(100vh - 240px);
-                    height: calc(100vh - 240px);
+                    height: auto;
                     border: none;
                     background: transparent;
                     color: var(--text);
@@ -927,7 +1016,7 @@ pub fn App() -> impl IntoView {
                     font: 15px/1.7 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
                     resize: none;
                     overflow-x: hidden;
-                    overflow-y: auto;
+                    overflow-y: hidden;
                 }
                 .editor:focus { outline: none; }
                 .preview {
@@ -1513,6 +1602,7 @@ pub fn App() -> impl IntoView {
                                                                         }
                                                                     }
                                                                 });
+                                                                auto_resize_editors();
                                                                 save_note(note_id);
                                                             }
                                                         }
@@ -1584,6 +1674,7 @@ pub fn App() -> impl IntoView {
                                                     }
                                                 }
                                             });
+                                            auto_resize_editors();
                                             save_note(note_id);
                                         }
                                     }
