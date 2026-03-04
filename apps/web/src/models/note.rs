@@ -2,13 +2,6 @@ use js_sys::Date;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EditorMode {
-    Raw,
-    Preview,
-    Split,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Note {
     pub id: String,
