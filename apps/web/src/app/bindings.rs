@@ -162,6 +162,19 @@ export function download_data_url(filename, dataUrl) {
   anchor.click();
   anchor.remove();
 }
+
+export function file_to_data_url(file) {
+  return new Promise((resolve, reject) => {
+    if (!(file instanceof File)) {
+      reject(new Error('Expected File'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
 "#)]
 extern "C" {
     pub fn highlight_markdown_code();
@@ -174,4 +187,5 @@ extern "C" {
     pub fn media_create_object_url(bytes: &[u8], mime_type: &str) -> String;
     pub fn media_revoke_object_url(url: &str);
     pub fn download_data_url(filename: &str, data_url: &str);
+    pub fn file_to_data_url(file: web_sys::File) -> js_sys::Promise;
 }

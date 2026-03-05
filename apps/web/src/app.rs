@@ -145,7 +145,9 @@ pub fn App() -> impl IntoView {
         ink_documents
             .get()
             .into_iter()
-            .filter_map(|(id, doc)| doc.thumbnail_data_url.map(|thumb| (id, thumb)))
+            .filter_map(|(id, doc)| {
+                doc.thumbnail_data_url.map(|preview| (id, preview))
+            })
             .collect::<std::collections::HashMap<_, _>>()
     });
 

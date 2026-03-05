@@ -1,15 +1,22 @@
-use crate::app::bindings::download_data_url;
-use crate::models::{InkDocument, InkPoint, InkStroke, InkTool};
+use crate::app::bindings::{click_by_id, download_data_url, file_to_data_url, ui_prompt};
+use crate::models::{InkDocument, InkEmbed, InkEmbedKind, InkPoint, InkStroke, InkTool};
+use icondata::{
+    LuCircle, LuEraser, LuHighlighter, LuMinus, LuMousePointer2, LuPencil, LuRectangleHorizontal,
+};
 use leptos::ev::{KeyboardEvent, PointerEvent, WheelEvent};
 use leptos::html::Canvas;
 use leptos::prelude::*;
+use leptos::web_sys::HtmlInputElement;
+use leptos_icons::Icon;
 use std::collections::HashSet;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, window};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
+use web_sys::{CanvasRenderingContext2d, Element, HtmlCanvasElement, HtmlImageElement, window};
 
 const MIN_ZOOM: f64 = 0.2;
 const MAX_ZOOM: f64 = 4.0;
+const INK_IMAGE_UPLOAD_INPUT_ID: &str = "ink-image-upload-input";
 
 #[component]
 pub fn InkCanvasModal(
@@ -18,10 +25,12 @@ pub fn InkCanvasModal(
     on_save: Callback<InkDocument>,
 ) -> impl IntoView {
     let (tool, set_tool) = signal(InkTool::Pen);
+    let (background, set_background) = signal(sanitize_hex_color(&initial_document.background));
     let (color, set_color) = signal("#e5e7eb".to_string());
     let (stroke_width, set_stroke_width) = signal(3.0f64);
     let (opacity, set_opacity) = signal(1.0f64);
     let (strokes, set_strokes) = signal(initial_document.strokes.clone());
+    let (embeds, set_embeds) = signal(initial_document.embeds.clone());
     let (_redo_stack, set_redo_stack) = signal::<Vec<InkStroke>>(Vec::new());
     let (is_drawing, set_is_drawing) = signal(false);
     let (is_panning, set_is_panning) = signal(false);
@@ -36,6 +45,15 @@ pub fn InkCanvasModal(
     let (camera_x, set_camera_x) = signal(0.0f64);
     let (camera_y, set_camera_y) = signal(0.0f64);
     let (zoom, set_zoom) = signal(1.0f64);
+    let (selected_embed_id, set_selected_embed_id) = signal::<Option<String>>(None);
+    let (dragging_embed_id, set_dragging_embed_id) = signal::<Option<String>>(None);
+    let (dragging_embed_offset, set_dragging_embed_offset) = signal((0.0f64, 0.0f64));
+    let (dragging_selected_strokes, set_dragging_selected_strokes) = signal(false);
+    let (dragging_strokes_last_point, set_dragging_strokes_last_point) =
+        signal::<Option<InkPoint>>(None);
+    let (resizing_embed_id, set_resizing_embed_id) = signal::<Option<String>>(None);
+    let (resizing_start_point, set_resizing_start_point) = signal((0.0f64, 0.0f64));
+    let (resizing_start_size, set_resizing_start_size) = signal((0.0f64, 0.0f64));
 
     let canvas_ref = NodeRef::<Canvas>::new();
     let canvas_width = initial_document.width.max(1600.0) as u32;
@@ -72,6 +90,7 @@ pub fn InkCanvasModal(
         draw_scene(
             &canvas,
             &strokes.get(),
+            &embeds.get(),
             tool.get(),
             &draft_points.get(),
             shape_start.get(),
@@ -86,6 +105,7 @@ pub fn InkCanvasModal(
 
     Effect::new(move |_| {
         let _ = strokes.get();
+        let _ = embeds.get();
         let _ = draft_points.get();
         let _ = shape_start.get();
         let _ = shape_end.get();
@@ -94,6 +114,7 @@ pub fn InkCanvasModal(
         let _ = camera_x.get();
         let _ = camera_y.get();
         let _ = zoom.get();
+        let _ = selected_embed_id.get();
         redraw();
     });
 
@@ -109,13 +130,64 @@ pub fn InkCanvasModal(
         }
     };
 
-    let commit_stroke = move |stroke: InkStroke| {
+    let commit_stroke = move |mut stroke: InkStroke| {
+        stroke.z_index = next_stroke_z(&strokes.get_untracked());
         set_strokes.update(|all| all.push(stroke));
         set_redo_stack.set(Vec::new());
     };
 
+    let on_embed_pointer_down = move |ev: PointerEvent, embed_id: String| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(target) = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+        {
+            let _ = target.set_pointer_capture(ev.pointer_id());
+        }
+        let Some(point) = to_world_point(ev) else {
+            return;
+        };
+        if let Some(embed) = embeds
+            .get_untracked()
+            .into_iter()
+            .find(|item| item.id == embed_id)
+        {
+            set_selected_embed_id.set(Some(embed.id.clone()));
+            set_selected_ids.set(HashSet::new());
+            set_dragging_embed_id.set(Some(embed.id));
+            set_dragging_embed_offset.set((point.x - embed.x, point.y - embed.y));
+        }
+    };
+
+    let on_embed_resize_pointer_down = move |ev: PointerEvent, embed_id: String| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(target) = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+        {
+            let _ = target.set_pointer_capture(ev.pointer_id());
+        }
+        let Some(point) = to_world_point(ev) else {
+            return;
+        };
+        if let Some(embed) = embeds
+            .get_untracked()
+            .into_iter()
+            .find(|item| item.id == embed_id)
+        {
+            set_selected_embed_id.set(Some(embed.id.clone()));
+            set_selected_ids.set(HashSet::new());
+            set_resizing_embed_id.set(Some(embed.id));
+            set_resizing_start_point.set((point.x, point.y));
+            set_resizing_start_size.set((embed.width, embed.height));
+        }
+    };
+
     let on_pointer_down = move |ev: PointerEvent| {
         ev.prevent_default();
+        ev.stop_propagation();
         let button = ev.button();
         let pan_mode = button == 1 || (button == 0 && space_pressed.get_untracked());
         if pan_mode {
@@ -127,6 +199,17 @@ pub fn InkCanvasModal(
         let Some(point) = to_world_point(ev) else {
             return;
         };
+        set_selected_embed_id.set(None);
+        if matches!(tool.get_untracked(), InkTool::Select) {
+            if let Some(hit_id) = pick_stroke_at_point(&strokes.get_untracked(), point) {
+                set_selected_ids.set(std::iter::once(hit_id).collect());
+                set_dragging_selected_strokes.set(true);
+                set_dragging_strokes_last_point.set(Some(point));
+                set_is_drawing.set(false);
+                return;
+            }
+            set_selected_ids.set(HashSet::new());
+        }
         set_is_drawing.set(true);
         match tool.get_untracked() {
             InkTool::Pen | InkTool::Highlighter => set_draft_points.set(vec![point]),
@@ -135,7 +218,7 @@ pub fn InkCanvasModal(
                 set_shape_start.set(Some(point));
                 set_shape_end.set(Some(point));
             }
-            InkTool::Lasso | InkTool::Select => {
+            InkTool::Select => {
                 set_selection_start.set(Some(point));
                 set_selection_rect.set(Some((point.x, point.y, point.x, point.y)));
             }
@@ -143,6 +226,63 @@ pub fn InkCanvasModal(
     };
 
     let on_pointer_move = move |ev: PointerEvent| {
+        if let Some(embed_id) = resizing_embed_id.get_untracked() {
+            let Some(point) = to_world_point(ev) else {
+                return;
+            };
+            let (sx, sy) = resizing_start_point.get_untracked();
+            let (sw, sh) = resizing_start_size.get_untracked();
+            let next_w = (sw + (point.x - sx)).max(120.0);
+            let next_h = (sh + (point.y - sy)).max(80.0);
+            set_embeds.update(|all| {
+                if let Some(embed) = all.iter_mut().find(|item| item.id == embed_id) {
+                    embed.width = next_w;
+                    embed.height = next_h;
+                }
+            });
+            return;
+        }
+        if let Some(embed_id) = dragging_embed_id.get_untracked() {
+            let Some(point) = to_world_point(ev) else {
+                return;
+            };
+            let (ox, oy) = dragging_embed_offset.get_untracked();
+            set_embeds.update(|all| {
+                if let Some(embed) = all.iter_mut().find(|item| item.id == embed_id) {
+                    embed.x = point.x - ox;
+                    embed.y = point.y - oy;
+                }
+            });
+            return;
+        }
+        if dragging_selected_strokes.get_untracked() {
+            let Some(point) = to_world_point(ev) else {
+                return;
+            };
+            let Some(last) = dragging_strokes_last_point.get_untracked() else {
+                set_dragging_strokes_last_point.set(Some(point));
+                return;
+            };
+            let dx = point.x - last.x;
+            let dy = point.y - last.y;
+            if dx.abs() > 0.0 || dy.abs() > 0.0 {
+                let selected = selected_ids.get_untracked();
+                if !selected.is_empty() {
+                    set_strokes.update(|all| {
+                        for stroke in all.iter_mut() {
+                            if selected.contains(&stroke.id) {
+                                for p in &mut stroke.points {
+                                    p.x += dx;
+                                    p.y += dy;
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+            set_dragging_strokes_last_point.set(Some(point));
+            return;
+        }
         if is_panning.get_untracked() {
             if let Some((last_x, last_y)) = last_pan_client.get_untracked() {
                 let dx = ev.client_x() as f64 - last_x;
@@ -167,7 +307,7 @@ pub fn InkCanvasModal(
             }
             InkTool::Eraser => erase_at(point),
             InkTool::Line | InkTool::Rectangle | InkTool::Circle => set_shape_end.set(Some(point)),
-            InkTool::Lasso | InkTool::Select => {
+            InkTool::Select => {
                 if let Some(start) = selection_start.get_untracked() {
                     set_selection_rect.set(Some((start.x, start.y, point.x, point.y)));
                 }
@@ -176,6 +316,19 @@ pub fn InkCanvasModal(
     };
 
     let on_pointer_up = move |_| {
+        if resizing_embed_id.get_untracked().is_some() {
+            set_resizing_embed_id.set(None);
+            return;
+        }
+        if dragging_embed_id.get_untracked().is_some() {
+            set_dragging_embed_id.set(None);
+            return;
+        }
+        if dragging_selected_strokes.get_untracked() {
+            set_dragging_selected_strokes.set(false);
+            set_dragging_strokes_last_point.set(None);
+            return;
+        }
         if is_panning.get_untracked() {
             set_is_panning.set(false);
             set_last_pan_client.set(None);
@@ -205,6 +358,7 @@ pub fn InkCanvasModal(
                             opacity.get_untracked()
                         },
                         points,
+                        z_index: 0,
                     });
                 }
                 set_draft_points.set(Vec::new());
@@ -220,12 +374,13 @@ pub fn InkCanvasModal(
                         width: stroke_width.get_untracked(),
                         opacity: opacity.get_untracked(),
                         points: vec![start, end],
+                        z_index: 0,
                     });
                 }
                 set_shape_start.set(None);
                 set_shape_end.set(None);
             }
-            InkTool::Lasso | InkTool::Select => {
+            InkTool::Select => {
                 if let Some((x1, y1, x2, y2)) = selection_rect.get_untracked() {
                     let (left, right) = (x1.min(x2), x1.max(x2));
                     let (top, bottom) = (y1.min(y2), y1.max(y2));
@@ -275,6 +430,40 @@ pub fn InkCanvasModal(
     };
 
     let on_key_down = move |ev: KeyboardEvent| {
+        if !(ev.meta_key() || ev.ctrl_key() || ev.alt_key()) {
+            match ev.key().to_ascii_lowercase().as_str() {
+                "v" => set_tool.set(InkTool::Select),
+                "p" => set_tool.set(InkTool::Pen),
+                "h" => set_tool.set(InkTool::Highlighter),
+                "e" => set_tool.set(InkTool::Eraser),
+                "l" => set_tool.set(InkTool::Line),
+                "r" => set_tool.set(InkTool::Rectangle),
+                "c" => set_tool.set(InkTool::Circle),
+                "i" => click_by_id(INK_IMAGE_UPLOAD_INPUT_ID),
+                "=" | "+" => set_zoom.update(|z| *z = (*z * 1.12).clamp(MIN_ZOOM, MAX_ZOOM)),
+                "-" => set_zoom.update(|z| *z = (*z * 0.89).clamp(MIN_ZOOM, MAX_ZOOM)),
+                "0" => {
+                    set_zoom.set(1.0);
+                    set_camera_x.set(0.0);
+                    set_camera_y.set(0.0);
+                }
+                "backspace" | "delete" => {
+                    if let Some(embed_id) = selected_embed_id.get_untracked() {
+                        set_embeds.update(|all| all.retain(|embed| embed.id != embed_id));
+                        set_selected_embed_id.set(None);
+                        return;
+                    }
+                    let selected = selected_ids.get_untracked();
+                    if !selected.is_empty() {
+                        set_strokes
+                            .update(|all| all.retain(|stroke| !selected.contains(&stroke.id)));
+                        set_selected_ids.set(HashSet::new());
+                        set_redo_stack.set(Vec::new());
+                    }
+                }
+                _ => {}
+            }
+        }
         if ev.key() == " " {
             ev.prevent_default();
             set_space_pressed.set(true);
@@ -320,6 +509,11 @@ pub fn InkCanvasModal(
     };
 
     let on_delete_selected = move |_| {
+        if let Some(embed_id) = selected_embed_id.get_untracked() {
+            set_embeds.update(|all| all.retain(|embed| embed.id != embed_id));
+            set_selected_embed_id.set(None);
+            return;
+        }
         let selected = selected_ids.get_untracked();
         if selected.is_empty() {
             return;
@@ -333,12 +527,92 @@ pub fn InkCanvasModal(
         set_strokes.set(Vec::new());
         set_redo_stack.set(Vec::new());
         set_selected_ids.set(HashSet::new());
+        set_selected_embed_id.set(None);
+    };
+
+    let add_image_embed = move |src: String| {
+        let clean_src = src.trim().to_string();
+        if clean_src.is_empty() {
+            return;
+        }
+        if !(clean_src.starts_with("https://")
+            || clean_src.starts_with("http://")
+            || clean_src.starts_with("slate-media://")
+            || clean_src.starts_with("data:image/"))
+        {
+            return;
+        }
+        let (w, h) = (520.0, 320.0);
+        let next_z = embeds
+            .get_untracked()
+            .iter()
+            .map(|embed| embed.z_index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let embed_id = Uuid::new_v4().to_string();
+        set_embeds.update(|all| {
+            all.push(InkEmbed {
+                id: embed_id.clone(),
+                kind: InkEmbedKind::Image,
+                src: clean_src,
+                x: camera_x.get_untracked() - w * 0.5,
+                y: camera_y.get_untracked() - h * 0.5,
+                width: w,
+                height: h,
+                z_index: next_z,
+            });
+        });
+        set_selected_embed_id.set(Some(embed_id));
+    };
+
+    let on_add_image = move |_| {
+        let src = ui_prompt("Image URL (http/https or slate-media://)", "https://");
+        add_image_embed(src);
+    };
+
+    let on_click_upload_image = move |_| {
+        click_by_id(INK_IMAGE_UPLOAD_INPUT_ID);
+    };
+
+    let on_upload_image = move |ev| {
+        let input = event_target::<HtmlInputElement>(&ev);
+        let file = input.files().and_then(|files| files.get(0));
+        input.set_value("");
+        let Some(file) = file else { return };
+        if !file.type_().starts_with("image/") {
+            return;
+        }
+        let add_image_embed = add_image_embed;
+        spawn_local(async move {
+            let promise = file_to_data_url(file);
+            if let Ok(value) = JsFuture::from(promise).await
+                && let Some(data_url) = value.as_string()
+            {
+                add_image_embed(data_url);
+            }
+        });
+    };
+
+    let on_remove_embed = move |embed_id: String| {
+        set_embeds.update(|all| all.retain(|item| item.id != embed_id));
+        if selected_embed_id.get_untracked().as_deref() == Some(embed_id.as_str()) {
+            set_selected_embed_id.set(None);
+        }
     };
 
     let on_reset_view = move |_| {
         set_zoom.set(1.0);
         set_camera_x.set(0.0);
         set_camera_y.set(0.0);
+    };
+
+    let on_zoom_in = move |_| {
+        set_zoom.update(|z| *z = (*z * 1.12).clamp(MIN_ZOOM, MAX_ZOOM));
+    };
+
+    let on_zoom_out = move |_| {
+        set_zoom.update(|z| *z = (*z * 0.89).clamp(MIN_ZOOM, MAX_ZOOM));
     };
 
     let on_export_png = move |_| {
@@ -353,10 +627,14 @@ pub fn InkCanvasModal(
     let initial_document_for_save = initial_document.clone();
     let on_save_click = move |_| {
         let mut doc = initial_document_for_save.clone();
+        doc.strokes_on_top = true;
+        doc.background = background.get_untracked();
         doc.strokes = strokes.get_untracked();
+        doc.embeds = embeds.get_untracked();
         doc.width = canvas_width as f64;
         doc.height = canvas_height as f64;
-        let thumbnail = render_thumbnail_data_url(&doc.strokes).or_else(|| {
+        let thumbnail =
+            render_thumbnail_data_url(&doc.strokes, &doc.embeds, &doc.background).or_else(|| {
             canvas_ref
                 .get()
                 .and_then(|canvas| canvas.to_data_url_with_type("image/png").ok())
@@ -370,40 +648,69 @@ pub fn InkCanvasModal(
     view! {
         <div class="ink-modal-backdrop">
             <div class="ink-modal" tabindex="0" on:keydown=on_key_down on:keyup=on_key_up>
-                <div class="ink-modal-header">
-                    <h3>"Infinite Whiteboard (Excalidraw-style)"</h3>
-                    <div class="ink-modal-actions">
+                <div class="ink-ui-top">
+                    <div class="ink-tool-dock">
+                        <button title="Select and move objects. Shortcut: V" class=move || if tool.get() == InkTool::Select { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Select)>
+                            <Icon icon=LuMousePointer2 />
+                        </button>
+                        <button title="Freehand pen stroke. Shortcut: P" class=move || if tool.get() == InkTool::Pen { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Pen)>
+                            <Icon icon=LuPencil />
+                        </button>
+                        <button title="Transparent highlight stroke. Shortcut: H" class=move || if tool.get() == InkTool::Highlighter { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Highlighter)>
+                            <Icon icon=LuHighlighter />
+                        </button>
+                        <button title="Erase strokes under cursor. Shortcut: E" class=move || if tool.get() == InkTool::Eraser { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Eraser)>
+                            <Icon icon=LuEraser />
+                        </button>
+                        <button title="Draw a straight line. Shortcut: L" class=move || if tool.get() == InkTool::Line { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Line)>
+                            <Icon icon=LuMinus />
+                        </button>
+                        <button title="Draw a rectangle. Shortcut: R" class=move || if tool.get() == InkTool::Rectangle { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Rectangle)>
+                            <Icon icon=LuRectangleHorizontal />
+                        </button>
+                        <button title="Draw a circle. Shortcut: C" class=move || if tool.get() == InkTool::Circle { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Circle)>
+                            <Icon icon=LuCircle />
+                        </button>
+                    </div>
+                    <div class="ink-actions-dock">
                         <span class="ink-zoom-badge">{move || format!("{:.0}%", zoom.get() * 100.0)}</span>
-                        <button class="mode-btn" on:click=on_undo>"Undo"</button>
-                        <button class="mode-btn" on:click=on_redo>"Redo"</button>
-                        <button class="mode-btn" on:click=on_reset_view>"Reset View"</button>
-                        <button class="mode-btn" on:click=on_export_png>"Export PNG"</button>
-                        <button class="mode-btn" on:click=move |_| on_cancel.run(())>"Close"</button>
-                        <button class="mode-btn active" on:click=on_save_click>"Save"</button>
+                        <button class="mode-btn ink-action-btn" title="Undo (Cmd/Ctrl+Z)" on:click=on_undo>"Undo"</button>
+                        <button class="mode-btn ink-action-btn" title="Redo (Cmd/Ctrl+Y)" on:click=on_redo>"Redo"</button>
+                        <button class="mode-btn ink-action-btn" on:click=on_export_png>"Export PNG"</button>
+                        <button class="mode-btn ink-action-btn" on:click=move |_| on_cancel.run(())>"Close"</button>
+                        <button class="mode-btn ink-action-btn active" on:click=on_save_click>"Save"</button>
                     </div>
                 </div>
 
-                <div class="ink-toolbar">
-                    <button class=move || if tool.get() == InkTool::Pen { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Pen)>"Pen"</button>
-                    <button class=move || if tool.get() == InkTool::Highlighter { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Highlighter)>"Highlighter"</button>
-                    <button class=move || if tool.get() == InkTool::Eraser { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Eraser)>"Eraser"</button>
-                    <button class=move || if tool.get() == InkTool::Line { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Line)>"Line"</button>
-                    <button class=move || if tool.get() == InkTool::Rectangle { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Rectangle)>"Rect"</button>
-                    <button class=move || if tool.get() == InkTool::Circle { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Circle)>"Circle"</button>
-                    <button class=move || if tool.get() == InkTool::Lasso { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Lasso)>"Lasso"</button>
-                    <button class=move || if tool.get() == InkTool::Select { "mode-btn active" } else { "mode-btn" } on:click=move |_| set_tool.set(InkTool::Select)>"Select"</button>
-                    <button class="mode-btn" on:click=on_delete_selected>"Delete Selected"</button>
-                    <button class="mode-btn" on:click=on_clear>"Clear"</button>
-                    <span class="ink-hint">"Space + Drag or Middle Mouse = Pan, Wheel = Zoom"</span>
-
-                    <input
-                        class="ink-color"
-                        type="color"
-                        prop:value=move || color.get()
-                        on:input=move |ev| set_color.set(event_target_value(&ev))
-                    />
+                <div class="ink-left-panel">
+                    <div class="ink-panel-title">"Stroke"</div>
                     <label class="ink-slider-label">
-                        "Size"
+                        "Background"
+                        <input
+                            class="ink-color"
+                            type="color"
+                            prop:value=move || background.get()
+                            on:input=move |ev| set_background.set(sanitize_hex_color(&event_target_value(&ev)))
+                        />
+                    </label>
+                    <label class="ink-slider-label">
+                        "Color"
+                        <input
+                            class="ink-color"
+                            type="color"
+                            prop:value=move || color.get()
+                            on:input=move |ev| set_color.set(event_target_value(&ev))
+                        />
+                    </label>
+                    <div class="ink-color-swatches">
+                        <button class="ink-swatch" style="--swatch:#f8fafc;" on:click=move |_| set_color.set("#f8fafc".to_string())></button>
+                        <button class="ink-swatch" style="--swatch:#f87171;" on:click=move |_| set_color.set("#f87171".to_string())></button>
+                        <button class="ink-swatch" style="--swatch:#34d399;" on:click=move |_| set_color.set("#34d399".to_string())></button>
+                        <button class="ink-swatch" style="--swatch:#60a5fa;" on:click=move |_| set_color.set("#60a5fa".to_string())></button>
+                        <button class="ink-swatch" style="--swatch:#f59e0b;" on:click=move |_| set_color.set("#f59e0b".to_string())></button>
+                    </div>
+                    <label class="ink-slider-label">
+                        "Stroke width"
                         <input
                             type="range"
                             min="1"
@@ -432,20 +739,156 @@ pub fn InkCanvasModal(
                             }
                         />
                     </label>
+                    <div class="ink-panel-title">"Assets"</div>
+                    <button class="mode-btn ink-side-btn" on:click=on_add_image>"Add Image URL"</button>
+                    <button class="mode-btn ink-side-btn" on:click=on_click_upload_image>"Upload Image"</button>
+                    <div class="ink-panel-title">"Layers/Actions"</div>
+                    <div class="ink-layer-strip">
+                        <span>{move || format!("Strokes: {}", strokes.get().len())}</span>
+                        <span>{move || format!("Images: {}", embeds.get().len())}</span>
+                    </div>
+                    <div class="ink-action-strip">
+                        <button class="mode-btn ink-strip-btn" on:click=on_undo title="Undo (Cmd/Ctrl+Z)">"Undo"</button>
+                        <button class="mode-btn ink-strip-btn" on:click=on_redo title="Redo (Cmd/Ctrl+Y)">"Redo"</button>
+                        <button class="mode-btn ink-strip-btn" on:click=on_delete_selected title="Delete Selection (Delete)">"Delete"</button>
+                        <button class="mode-btn ink-strip-btn" on:click=on_clear>"Clear"</button>
+                    </div>
+                    <button class="mode-btn ink-side-btn" on:click=on_delete_selected>"Delete Selected"</button>
+                    <button class="mode-btn ink-side-btn" on:click=on_clear>"Clear Board"</button>
+                    <button class="mode-btn ink-side-btn" on:click=on_reset_view>"Reset View"</button>
                 </div>
 
-                <div class="ink-canvas-wrap">
+                <div
+                    class="ink-canvas-wrap"
+                    style=move || format!("background:{};", background.get())
+                    on:pointerdown=on_pointer_down
+                    on:pointermove=on_pointer_move
+                    on:pointerup=on_pointer_up
+                >
+                    <input
+                        id=INK_IMAGE_UPLOAD_INPUT_ID
+                        class="media-hidden-input"
+                        type="file"
+                        accept="image/*"
+                        on:change=on_upload_image
+                    />
+                    <For
+                        each=move || embeds.get()
+                        key=|embed| embed.id.clone()
+                        children=move |embed| {
+                            let id_drag = embed.id.clone();
+                            let id_resize = embed.id.clone();
+                            let id_remove = embed.id.clone();
+                            let id_style = embed.id.clone();
+                            let id_selected = embed.id.clone();
+                            let id_img_kind = embed.id.clone();
+                            let id_vid_kind = embed.id.clone();
+                            let id_img_src = embed.id.clone();
+                            view! {
+                                <div
+                                    class="ink-embed-node"
+                                    style=move || {
+                                        if let Some(current) = embeds
+                                            .get()
+                                            .into_iter()
+                                            .find(|item| item.id == id_style)
+                                        {
+                                            embed_style(
+                                                &current,
+                                                canvas_ref.get(),
+                                                canvas_width as f64,
+                                                canvas_height as f64,
+                                                camera_x.get(),
+                                                camera_y.get(),
+                                                zoom.get(),
+                                                selected_embed_id.get().as_deref() == Some(id_selected.as_str()),
+                                            )
+                                        } else {
+                                            "display:none;".to_string()
+                                        }
+                                    }
+                                    on:pointerdown=move |ev| on_embed_pointer_down(ev, id_drag.clone())
+                                    on:pointermove=on_pointer_move
+                                    on:pointerup=on_pointer_up
+                                >
+                                    <button
+                                        class="ink-embed-remove"
+                                        on:pointerdown=move |ev| {
+                                            ev.stop_propagation();
+                                        }
+                                        on:click=move |_| on_remove_embed(id_remove.clone())
+                                    >
+                                        "x"
+                                    </button>
+                                    <div
+                                        class="ink-embed-resize"
+                                        on:pointerdown=move |ev| on_embed_resize_pointer_down(ev, id_resize.clone())
+                                        on:pointermove=on_pointer_move
+                                        on:pointerup=on_pointer_up
+                                    ></div>
+                                    <img
+                                        class="ink-embed-media"
+                                        style=move || {
+                                            let wanted_id = id_img_kind.clone();
+                                            let is_image = embeds
+                                                .get()
+                                                .into_iter()
+                                                .find(|item| item.id == wanted_id)
+                                                .map(|item| matches!(item.kind, InkEmbedKind::Image))
+                                                .unwrap_or(false);
+                                            if is_image { "display:block;" } else { "display:none;" }
+                                        }
+                                        src=move || {
+                                            let wanted_id = id_img_src.clone();
+                                            embeds
+                                                .get()
+                                                .into_iter()
+                                                .find(|item| item.id == wanted_id)
+                                                .map(|item| item.src)
+                                                .unwrap_or_default()
+                                        }
+                                        alt="Whiteboard embed"
+                                    />
+                                    <div
+                                        class="ink-embed-unsupported"
+                                        style=move || {
+                                            let wanted_id = id_vid_kind.clone();
+                                            let is_video = embeds
+                                                .get()
+                                                .into_iter()
+                                                .find(|item| item.id == wanted_id)
+                                                .map(|item| matches!(item.kind, InkEmbedKind::Video))
+                                                .unwrap_or(false);
+                                            if is_video { "display:grid;" } else { "display:none;" }
+                                        }
+                                    >
+                                        "Video embeds are no longer supported."
+                                    </div>
+                                </div>
+                            }
+                        }
+                    />
                     <canvas
                         node_ref=canvas_ref
                         class="ink-canvas"
                         width=canvas_width
                         height=canvas_height
-                        on:pointerdown=on_pointer_down
-                        on:pointermove=on_pointer_move
-                        on:pointerup=on_pointer_up
+                        style=move || {
+                            if matches!(tool.get(), InkTool::Select) {
+                                "pointer-events:none; z-index:4;".to_string()
+                            } else {
+                                "pointer-events:auto; z-index:4;".to_string()
+                            }
+                        }
                         on:pointerleave=on_pointer_up
                         on:wheel=on_wheel
                     ></canvas>
+                </div>
+                <div class="ink-bottom-bar">
+                    <button class="mode-btn ink-bottom-btn" on:click=on_zoom_out>"-"</button>
+                    <span class="ink-bottom-zoom">{move || format!("{:.0}%", zoom.get() * 100.0)}</span>
+                    <button class="mode-btn ink-bottom-btn" on:click=on_zoom_in>"+"</button>
+                    <span class="ink-hint">"Mouse: Space+Drag pan, Wheel zoom | Keyboard: Tab/Shift+Tab move focus, Enter/Space activate, V/P/H/E/L/R/C tools"</span>
                 </div>
             </div>
         </div>
@@ -455,6 +898,7 @@ pub fn InkCanvasModal(
 fn draw_scene(
     canvas: &HtmlCanvasElement,
     strokes: &[InkStroke],
+    _embeds: &[InkEmbed],
     tool: InkTool,
     draft_points: &[InkPoint],
     shape_start: Option<InkPoint>,
@@ -470,11 +914,12 @@ fn draw_scene(
     };
     let width = canvas.width() as f64;
     let height = canvas.height() as f64;
-    ctx.set_fill_style_str("#111827");
-    ctx.fill_rect(0.0, 0.0, width, height);
+    ctx.clear_rect(0.0, 0.0, width, height);
     draw_grid(&ctx, width, height, camera_x, camera_y, zoom);
 
-    for stroke in strokes {
+    let mut ordered_strokes = strokes.to_vec();
+    ordered_strokes.sort_by_key(|stroke| stroke.z_index);
+    for stroke in &ordered_strokes {
         draw_stroke(&ctx, stroke, width, height, camera_x, camera_y, zoom);
         if selected_ids.contains(&stroke.id) {
             let (x1, y1, x2, y2) = stroke_bounds(stroke);
@@ -506,6 +951,7 @@ fn draw_scene(
                 1.0
             },
             points: draft_points.to_vec(),
+            z_index: i32::MAX,
         };
         draw_stroke(&ctx, &draft, width, height, camera_x, camera_y, zoom);
     }
@@ -654,6 +1100,61 @@ fn draw_grid(
     ctx.restore();
 }
 
+fn embed_style(
+    embed: &InkEmbed,
+    canvas: Option<HtmlCanvasElement>,
+    canvas_width: f64,
+    canvas_height: f64,
+    camera_x: f64,
+    camera_y: f64,
+    zoom: f64,
+    is_selected: bool,
+) -> String {
+    let (sx, sy) = world_to_screen(
+        embed.x,
+        embed.y,
+        canvas_width,
+        canvas_height,
+        camera_x,
+        camera_y,
+        zoom,
+    );
+    let (scale_x, scale_y) = if let Some(canvas) = canvas {
+        let rect = canvas.get_bounding_client_rect();
+        let x = if canvas_width > 0.0 {
+            rect.width() / canvas_width
+        } else {
+            1.0
+        };
+        let y = if canvas_height > 0.0 {
+            rect.height() / canvas_height
+        } else {
+            1.0
+        };
+        (x, y)
+    } else {
+        (1.0, 1.0)
+    };
+    let left = sx * scale_x;
+    let top = sy * scale_y;
+    let border_color = if is_selected {
+        "color-mix(in srgb, #a78bfa, transparent 8%)"
+    } else {
+        "color-mix(in srgb, #7dd3fc, transparent 38%)"
+    };
+    let ring = if is_selected {
+        "0 0 0 1px rgba(167,139,250,0.7), 0 8px 20px rgba(2, 6, 23, 0.35)"
+    } else {
+        "0 8px 20px rgba(2, 6, 23, 0.35)"
+    };
+    format!(
+        "left: {left}px; top: {top}px; width: {}px; height: {}px; z-index:{}; border-color:{border_color}; box-shadow:{ring};",
+        ((embed.width * zoom) * scale_x).max(36.0),
+        ((embed.height * zoom) * scale_y).max(28.0),
+        2 + embed.z_index
+    )
+}
+
 fn world_to_screen(
     x: f64,
     y: f64,
@@ -720,8 +1221,22 @@ fn stroke_hit_test(stroke: &InkStroke, point: InkPoint) -> bool {
     })
 }
 
-fn render_thumbnail_data_url(strokes: &[InkStroke]) -> Option<String> {
-    let (min_x, min_y, max_x, max_y) = all_strokes_bounds(strokes)?;
+fn next_stroke_z(strokes: &[InkStroke]) -> i32 {
+    strokes.iter().map(|stroke| stroke.z_index).max().unwrap_or(0) + 1
+}
+
+fn pick_stroke_at_point(strokes: &[InkStroke], point: InkPoint) -> Option<String> {
+    let mut ordered = strokes.to_vec();
+    ordered.sort_by_key(|stroke| stroke.z_index);
+    ordered
+        .into_iter()
+        .rev()
+        .find(|stroke| stroke_hit_test(stroke, point))
+        .map(|stroke| stroke.id)
+}
+
+fn render_thumbnail_data_url(strokes: &[InkStroke], embeds: &[InkEmbed], background: &str) -> Option<String> {
+    let (min_x, min_y, max_x, max_y) = all_content_bounds(strokes, embeds)?;
     let bounds_w = (max_x - min_x).max(1.0);
     let bounds_h = (max_y - min_y).max(1.0);
     let aspect = bounds_w / bounds_h;
@@ -741,7 +1256,7 @@ fn render_thumbnail_data_url(strokes: &[InkStroke]) -> Option<String> {
     canvas.set_width(canvas_w as u32);
     canvas.set_height(canvas_h as u32);
     let ctx = canvas_context(&canvas)?;
-    ctx.set_fill_style_str("#111827");
+    ctx.set_fill_style_str(&sanitize_hex_color(background));
     ctx.fill_rect(0.0, 0.0, canvas_w, canvas_h);
 
     let margin = 32.0;
@@ -751,6 +1266,9 @@ fn render_thumbnail_data_url(strokes: &[InkStroke]) -> Option<String> {
     let offset_x = (canvas_w - bounds_w * scale) * 0.5;
     let offset_y = (canvas_h - bounds_h * scale) * 0.5;
 
+    for embed in embeds {
+        draw_embed_thumbnail(&ctx, embed, min_x, min_y, scale, offset_x, offset_y);
+    }
     for stroke in strokes {
         draw_stroke_thumbnail(&ctx, stroke, min_x, min_y, scale, offset_x, offset_y);
     }
@@ -824,7 +1342,71 @@ fn draw_stroke_thumbnail(
     ctx.restore();
 }
 
-fn all_strokes_bounds(strokes: &[InkStroke]) -> Option<(f64, f64, f64, f64)> {
+fn draw_embed_thumbnail(
+    ctx: &CanvasRenderingContext2d,
+    embed: &InkEmbed,
+    min_x: f64,
+    min_y: f64,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+) {
+    let x = (embed.x - min_x) * scale + offset_x;
+    let y = (embed.y - min_y) * scale + offset_y;
+    let w = (embed.width * scale).max(4.0);
+    let h = (embed.height * scale).max(4.0);
+
+    if matches!(embed.kind, InkEmbedKind::Image)
+        && embed.src.starts_with("data:image/")
+        && let Some(img) = find_loaded_embed_image(&embed.src)
+        && ctx
+            .draw_image_with_html_image_element_and_dw_and_dh(&img, x, y, w, h)
+            .is_ok()
+    {
+        ctx.save();
+        ctx.set_stroke_style_str("rgba(148, 163, 184, 0.45)");
+        ctx.set_line_width(1.0);
+        ctx.stroke_rect(x, y, w, h);
+        ctx.restore();
+        return;
+    }
+
+    ctx.save();
+    ctx.set_fill_style_str("rgba(30, 41, 59, 0.72)");
+    ctx.fill_rect(x, y, w, h);
+    ctx.set_stroke_style_str("rgba(94, 234, 212, 0.9)");
+    ctx.set_line_width(1.0);
+    ctx.stroke_rect(x, y, w, h);
+    ctx.set_fill_style_str("rgba(226, 232, 240, 0.92)");
+    ctx.set_font("12px ui-sans-serif");
+    let label = if matches!(embed.kind, InkEmbedKind::Video) {
+        "Video"
+    } else {
+        "Image"
+    };
+    let _ = ctx.fill_text(label, x + 6.0, y + 16.0);
+    ctx.restore();
+}
+
+fn find_loaded_embed_image(src: &str) -> Option<HtmlImageElement> {
+    let document = window()?.document()?;
+    let nodes = document.get_elements_by_class_name("ink-embed-media");
+    let mut idx = 0;
+    while idx < nodes.length() {
+        if let Some(node) = nodes.item(idx)
+            && let Ok(img) = node.dyn_into::<HtmlImageElement>()
+        {
+            let candidate = img.get_attribute("src").unwrap_or_default();
+            if candidate == src {
+                return Some(img);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn all_content_bounds(strokes: &[InkStroke], embeds: &[InkEmbed]) -> Option<(f64, f64, f64, f64)> {
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
@@ -838,10 +1420,31 @@ fn all_strokes_bounds(strokes: &[InkStroke]) -> Option<(f64, f64, f64, f64)> {
             max_y = max_y.max(point.y);
         }
     }
+    for embed in embeds {
+        min_x = min_x.min(embed.x);
+        min_y = min_y.min(embed.y);
+        max_x = max_x.max(embed.x + embed.width);
+        max_y = max_y.max(embed.y + embed.height);
+    }
 
     if !min_x.is_finite() {
         None
     } else {
         Some((min_x, min_y, max_x, max_y))
+    }
+}
+
+fn sanitize_hex_color(value: &str) -> String {
+    let trimmed = value.trim();
+    let is_hex = trimmed.len() == 7
+        && trimmed.starts_with('#')
+        && trimmed
+            .chars()
+            .skip(1)
+            .all(|ch| ch.is_ascii_hexdigit());
+    if is_hex {
+        trimmed.to_string()
+    } else {
+        "#0b1020".to_string()
     }
 }
