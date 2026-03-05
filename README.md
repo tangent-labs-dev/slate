@@ -2,7 +2,7 @@
 
 Simple local-first markdown notes app.
 
-Live: [Slate](https://app.slate.tangentlabs.dev)
+Live: [Slate](https://slate.tangentlabs.dev/home)
 
 ## Features
 

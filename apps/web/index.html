@@ -1,17 +1,310 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/rust.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/python.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/javascript.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/typescript.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/json.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/bash.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/markdown.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/yaml.min.js"></script>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Slate - An Open Source Local First Markdown Note Taking App</title>
+    <meta
+      name="description"
+      content="Slate is a local-first notes app with markdown editing, wiki links, and fast search."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="canonical" href="https://slate.tangentlabs.dev/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Slate" />
+    <meta
+      property="og:title"
+      content="Slate - An Open Source Local First Markdown Note Taking App"
+    />
+    <meta
+      property="og:description"
+      content="Slate is a local-first notes app with markdown editing, wiki links, backlinks, and fast search."
+    />
+    <meta property="og:url" content="https://slate.tangentlabs.dev/" />
+    <meta property="og:image" content="og.png" />
+    <meta property="og:image:alt" content="Slate app preview image" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Slate - An Open Source Local First Markdown Note Taking App"
+    />
+    <meta
+      name="twitter:description"
+      content="Slate is a local-first notes app with markdown editing, wiki links, backlinks, and fast search."
+    />
+    <meta name="twitter:image" content="og.png" />
+    <meta name="twitter:image:alt" content="Slate app preview image" />
+    <link data-trunk rel="copy-file" href="logo.svg" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;900&amp;display=swap"
+      rel="stylesheet"
+    />
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              primary: "#71717a",
+              "background-light": "#fafafa",
+              "background-dark": "#09090b",
+            },
+            fontFamily: {
+              display: ["Inter", "sans-serif"],
+            },
+            borderRadius: {
+              DEFAULT: "0.25rem",
+              lg: "0.5rem",
+              xl: "0.75rem",
+              full: "9999px",
+            },
+          },
+        },
+      };
+    </script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/highlight.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/rust.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/python.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/javascript.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/typescript.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/json.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/bash.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/markdown.min.js"
+    ></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.11.1/build/languages/yaml.min.js"
+    ></script>
   </head>
-  <body></body>
+  <body class="bg-zinc-950 font-display text-zinc-100">
+    <div
+      id="landing-root"
+      class="relative flex min-h-screen w-full flex-col group/design-root overflow-x-hidden bg-gradient-to-b from-zinc-950 via-zinc-900 to-zinc-950"
+    >
+      <div class="layout-container flex h-full grow flex-col">
+        <div class="px-40 flex flex-1 justify-center py-5">
+          <div
+            class="layout-content-container flex flex-col w-full max-w-[1200px] flex-1"
+          >
+            <header
+              class="flex items-center justify-between whitespace-nowrap border-b border-solid border-zinc-700/70 px-10 py-4 mb-8"
+            >
+              <div class="flex items-center gap-4">
+                <img src="/logo.svg" alt="Slate logo" class="h-6 w-6" />
+                <h2 class="text-lg font-bold leading-tight tracking-[-0.015em]">
+                  Slate
+                </h2>
+              </div>
+              <a
+                href="https://github.com/tangent-labs-dev/slate"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="View Slate on GitHub"
+                class="inline-flex items-center gap-2 rounded-lg border border-zinc-600 bg-zinc-800/80 px-3 py-2 text-sm font-medium text-zinc-100 hover:text-primary hover:border-primary/50 transition-colors"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  class="h-5 w-5"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 .296C5.37.296 0 5.666 0 12.297c0 5.302 3.438 9.8 8.205 11.387.6.111.82-.261.82-.578 0-.286-.011-1.231-.016-2.232-3.338.726-4.043-1.416-4.043-1.416-.546-1.387-1.333-1.757-1.333-1.757-1.089-.745.084-.729.084-.729 1.205.085 1.84 1.237 1.84 1.237 1.07 1.833 2.809 1.304 3.495.997.108-.775.419-1.305.762-1.605-2.665-.303-5.467-1.333-5.467-5.932 0-1.311.468-2.381 1.236-3.221-.124-.303-.535-1.523.117-3.176 0 0 1.008-.322 3.301 1.23a11.503 11.503 0 0 1 3.005-.404c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.654 1.653.243 2.873.119 3.176.77.84 1.234 1.91 1.234 3.221 0 4.61-2.807 5.625-5.479 5.921.431.372.815 1.103.815 2.222 0 1.606-.014 2.899-.014 3.293 0 .319.216.694.825.576C20.565 22.092 24 17.596 24 12.297 24 5.666 18.627.296 12 .296Z"
+                  />
+                </svg>
+                GitHub
+              </a>
+            </header>
+            <div class="@container mb-16">
+              <div class="@[480px]:p-4">
+                <div
+                  class="flex min-h-[560px] flex-col gap-8 bg-cover bg-center bg-no-repeat rounded-xl items-center justify-center p-8 relative overflow-hidden bg-zinc-900/90 border border-zinc-700 shadow-xl shadow-zinc-950/40"
+                  data-alt="Abstract minimalist desk setup workspace pattern"
+                >
+                  <div
+                    class="absolute inset-0 bg-gradient-to-b from-zinc-700/20 via-primary/10 to-transparent pointer-events-none"
+                  ></div>
+                  <div
+                    class="flex flex-col gap-6 text-center max-w-3xl z-10 relative"
+                  >
+                    <h1
+                      class="text-white text-5xl font-black leading-tight tracking-[-0.033em] @[480px]:text-6xl"
+                    >
+                      Notes that stay fast and local.
+                    </h1>
+                    <h2
+                      class="text-zinc-300 text-lg font-normal leading-relaxed @[480px]:text-xl max-w-2xl mx-auto"
+                    >
+                      Slate is a local-first markdown notes app with wiki links,
+                      backlinks, and smart note navigation. Your notes stay on
+                      your device and work offline by default.
+                    </h2>
+                  </div>
+                  <a
+                    href="/home"
+                    class="z-10 flex cursor-pointer items-center justify-center overflow-hidden rounded-lg h-14 px-8 bg-primary text-white hover:bg-primary/90 transition-colors text-base font-bold leading-normal tracking-[0.015em] shadow-lg shadow-primary/20"
+                  >
+                    <span class="truncate">Open Slate</span>
+                  </a>
+                  <div
+                    class="z-10 mt-8 text-sm text-zinc-400 flex items-center gap-2"
+                  >
+                    <span class="material-symbols-outlined text-sm"
+                      >check_circle</span
+                    >
+                    Free and open source
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div
+              class="flex flex-col gap-12 px-4 py-16 @container border-t border-zinc-700/70"
+            >
+              <div class="flex flex-col gap-4 text-center items-center">
+                <h2
+                  class="text-primary font-bold tracking-wider text-sm uppercase"
+                >
+                  Features
+                </h2>
+                <h3
+                  class="text-white tracking-tight text-[32px] font-bold leading-tight @[480px]:text-4xl max-w-[720px]"
+                >
+                  Why choose Slate?
+                </h3>
+                <p
+                  class="text-zinc-300 text-lg font-normal leading-normal max-w-[600px]"
+                >
+                  Built for focused writing with practical knowledge-management
+                  features.
+                </p>
+              </div>
+              <div
+                class="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-8 p-0 max-w-5xl mx-auto w-full"
+              >
+                <div
+                  class="flex flex-1 gap-5 rounded-xl border border-zinc-700 bg-zinc-900/80 p-8 flex-col hover:shadow-lg hover:shadow-zinc-950/40 transition-shadow"
+                >
+                  <div
+                    class="text-primary bg-primary/10 w-14 h-14 rounded-lg flex items-center justify-center"
+                  >
+                    <span class="material-symbols-outlined text-3xl">code</span>
+                  </div>
+                  <div class="flex flex-col gap-3">
+                    <h4 class="text-white text-xl font-bold leading-tight">
+                      Markdown + Wiki Links
+                    </h4>
+                    <p
+                      class="text-zinc-300 text-base font-normal leading-relaxed"
+                    >
+                      Write in plain markdown and connect notes instantly with
+                      Obsidian-style wiki links like [[Project Plan]].
+                    </p>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-1 gap-5 rounded-xl border border-zinc-700 bg-zinc-900/80 p-8 flex-col hover:shadow-lg hover:shadow-zinc-950/40 transition-shadow"
+                >
+                  <div
+                    class="text-primary bg-primary/10 w-14 h-14 rounded-lg flex items-center justify-center"
+                  >
+                    <span class="material-symbols-outlined text-3xl"
+                      >cloud_sync</span
+                    >
+                  </div>
+                  <div class="flex flex-col gap-3">
+                    <h4 class="text-white text-xl font-bold leading-tight">
+                      Local-First Storage
+                    </h4>
+                    <p
+                      class="text-zinc-300 text-base font-normal leading-relaxed"
+                    >
+                      Notes are saved in your browser with IndexedDB, so the app
+                      starts fast and works even without an internet connection.
+                    </p>
+                  </div>
+                </div>
+                <div
+                  class="flex flex-1 gap-5 rounded-xl border border-zinc-700 bg-zinc-900/80 p-8 flex-col hover:shadow-lg hover:shadow-zinc-950/40 transition-shadow"
+                >
+                  <div
+                    class="text-primary bg-primary/10 w-14 h-14 rounded-lg flex items-center justify-center"
+                  >
+                    <span class="material-symbols-outlined text-3xl"
+                      >gpp_good</span
+                    >
+                  </div>
+                  <div class="flex flex-col gap-3">
+                    <h4 class="text-white text-xl font-bold leading-tight">
+                      Backlinks and Smart Rename
+                    </h4>
+                    <p
+                      class="text-zinc-300 text-base font-normal leading-relaxed"
+                    >
+                      See linked mentions automatically and keep references
+                      intact with automatic wiki-link updates when renaming
+                      notes.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <footer
+              class="flex flex-col gap-8 px-5 py-12 text-center border-t border-zinc-700/70 mt-12 @container"
+            >
+              <div class="flex items-center justify-center gap-2 mb-4">
+                <img src="/logo.svg" alt="Slate logo" class="h-5 w-5" />
+                <span class="font-bold text-white">Slate</span>
+              </div>
+              <div class="flex flex-wrap items-center justify-center gap-8">
+                <a
+                  class="text-zinc-400 hover:text-primary transition-colors text-sm font-medium leading-normal"
+                  href="/home"
+                  >Open App</a
+                >
+                <a
+                  class="text-zinc-400 hover:text-primary transition-colors text-sm font-medium leading-normal"
+                  href="https://github.com/tangent-labs-dev/slate"
+                  >GitHub</a
+                >
+              </div>
+              <p class="text-zinc-500 text-sm font-normal leading-normal">
+                © 2026 Slate. Built with Rust.
+              </p>
+            </footer>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
 </html>
