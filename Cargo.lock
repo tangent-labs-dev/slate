@@ -1977,10 +1977,12 @@ dependencies = [
  "rexie",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "thaw",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

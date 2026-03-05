@@ -18,6 +18,7 @@ pub fn EditorPane(
     set_db_error: WriteSignal<Option<String>>,
     on_open_note: Callback<String>,
     on_open_or_create_note: Callback<String>,
+    on_open_ink: Callback<String>,
     on_close_tab: Callback<String>,
     on_new_note: Callback<()>,
     save_note: Callback<String>,
@@ -61,6 +62,7 @@ pub fn EditorPane(
                     set_notes=set_notes
                     on_open_note=on_open_note
                     on_open_or_create_note=on_open_or_create_note
+                    on_open_ink=on_open_ink
                     save_note=save_note
                     cleanup_orphaned_media=cleanup_orphaned_media
                 />

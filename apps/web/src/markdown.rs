@@ -124,6 +124,103 @@ pub fn collect_slate_media_ids(markdown: &str) -> Vec<String> {
     ids
 }
 
+pub fn collect_slate_ink_ids(markdown: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut in_code_fence = false;
+    let mut pending_ink_id: Option<String> = None;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+
+        if is_fence_toggle(trimmed) {
+            in_code_fence = !in_code_fence;
+            continue;
+        }
+        if in_code_fence {
+            continue;
+        }
+
+        if pending_ink_id.is_none() && trimmed.starts_with(":::ink") {
+            if let Some(id) = parse_ink_id(trimmed) {
+                // Single-line marker is canonical.
+                if !trimmed.ends_with(":::") {
+                    pending_ink_id = Some(id.clone());
+                }
+                ids.push(id);
+            }
+            continue;
+        }
+
+        if pending_ink_id.is_some() && trimmed == ":::" {
+            pending_ink_id = None;
+        }
+    }
+
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+pub fn rewrite_ink_blocks_to_html(
+    markdown: &str,
+    thumbnail_index: &HashMap<String, String>,
+) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    let mut in_code_fence = false;
+    let mut waiting_for_legacy_close = false;
+
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+
+        if is_fence_toggle(trimmed) {
+            in_code_fence = !in_code_fence;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_code_fence {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        if waiting_for_legacy_close && trimmed == ":::" {
+            waiting_for_legacy_close = false;
+            continue;
+        }
+
+        if trimmed.starts_with(":::ink") {
+            if let Some(id) = parse_ink_id(trimmed) {
+                let safe_id = escape_html(&id);
+                if let Some(thumb) = thumbnail_index.get(&id) {
+                    let safe_thumb = escape_html(thumb);
+                    out.push_str(&format!(
+                        r#"<div class="ink-embed" data-ink-id="{safe_id}"><img class="ink-embed-thumb" src="{safe_thumb}" alt="Ink drawing" loading="lazy" /></div>"#
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        r#"<div class="ink-embed" data-ink-id="{safe_id}"><div class="ink-embed-empty">Ink drawing</div></div>"#
+                    ));
+                }
+                out.push('\n');
+                // Legacy multiline syntax may include a closing ::: on next line.
+                if !trimmed.ends_with(":::") {
+                    waiting_for_legacy_close = true;
+                }
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    out
+}
+
 fn rewrite_wiki_links(input: &str, note_title_index: &HashMap<String, String>) -> String {
     let links = parse_wiki_links(input);
     if links.is_empty() {
@@ -200,6 +297,22 @@ fn extract_attr<'a>(tag: &'a str, attr_name: &str) -> Option<&'a str> {
     let rest = &tag[start..];
     let end = rest.find('"')?;
     Some(&rest[..end])
+}
+
+fn parse_ink_id(line: &str) -> Option<String> {
+    let marker = "\"id\":\"";
+    let idx = line.find(marker)?;
+    let rest = &line[idx + marker.len()..];
+    let end = rest.find('"')?;
+    let id = rest[..end].trim();
+    if id.is_empty() {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+fn is_fence_toggle(trimmed: &str) -> bool {
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
 fn video_embed_src(url: &str) -> Option<String> {
@@ -300,5 +413,31 @@ mod tests {
         let rewritten = rewrite_video_image_tags(html);
         assert!(rewritten.contains("<iframe"));
         assert!(rewritten.contains("youtube.com/embed/abc123"));
+    }
+
+    #[test]
+    fn collects_ink_ids_from_blocks() {
+        let input = r#"
+:::ink {"id":"ink-a"}
+:::
+
+:::ink {"id":"ink-b"}
+some ignored payload
+:::
+"#;
+        let ids = collect_slate_ink_ids(input);
+        assert_eq!(ids, vec!["ink-a".to_string(), "ink-b".to_string()]);
+    }
+
+    #[test]
+    fn rewrites_ink_blocks_to_placeholders() {
+        let mut thumbs = HashMap::new();
+        thumbs.insert("ink-a".to_string(), "data:image/png;base64,abc".to_string());
+        let input = "before\n:::ink {\"id\":\"ink-a\"}\n:::\nafter";
+        let out = rewrite_ink_blocks_to_html(input, &thumbs);
+        assert!(out.contains("data-ink-id=\"ink-a\""));
+        assert!(out.contains("ink-embed-thumb"));
+        assert!(out.contains("before"));
+        assert!(out.contains("after"));
     }
 }

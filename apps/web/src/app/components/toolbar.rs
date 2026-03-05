@@ -11,6 +11,7 @@ pub fn Toolbar(
     set_theme: WriteSignal<AppTheme>,
     on_insert_image_url: Callback<()>,
     on_insert_video_url: Callback<()>,
+    on_insert_ink: Callback<()>,
     on_click_upload_image: Callback<()>,
     on_click_upload_video: Callback<()>,
 ) -> impl IntoView {
@@ -49,31 +50,37 @@ pub fn Toolbar(
                 <button class="mode-btn" on:click=move |_| on_insert_video_url.run(())>
                     "Video URL"
                 </button>
+                <button class="mode-btn" on:click=move |_| on_insert_ink.run(())>
+                    "Insert Ink"
+                </button>
                 <button class="mode-btn" on:click=move |_| on_click_upload_video.run(())>
                     "Upload Video"
                 </button>
             </div>
-            <select
-                class="theme-select"
-                title="Select theme"
-                on:change=move |ev| {
-                    let value = event_target_value(&ev);
-                    set_theme.set(AppTheme::from_attr(&value));
-                }
-            >
-                <option value="dark" selected=move || theme.get() == AppTheme::Dark>
-                    "Dark"
-                </option>
-                <option value="light" selected=move || theme.get() == AppTheme::Light>
-                    "Light"
-                </option>
-                <option value="sepia" selected=move || theme.get() == AppTheme::Sepia>
-                    "Sepia"
-                </option>
-                <option value="midnight" selected=move || theme.get() == AppTheme::Midnight>
-                    "Midnight"
-                </option>
-            </select>
+            <label class="theme-picker">
+                <span class="theme-picker-label">"Theme"</span>
+                <select
+                    class="theme-select"
+                    title="Select theme"
+                    on:change=move |ev| {
+                        let value = event_target_value(&ev);
+                        set_theme.set(AppTheme::from_attr(&value));
+                    }
+                >
+                    <option value="dark" selected=move || theme.get() == AppTheme::Dark>
+                        "Dark"
+                    </option>
+                    <option value="light" selected=move || theme.get() == AppTheme::Light>
+                        "Light"
+                    </option>
+                    <option value="sepia" selected=move || theme.get() == AppTheme::Sepia>
+                        "Sepia"
+                    </option>
+                    <option value="midnight" selected=move || theme.get() == AppTheme::Midnight>
+                        "Midnight"
+                    </option>
+                </select>
+            </label>
         </div>
     }
 }

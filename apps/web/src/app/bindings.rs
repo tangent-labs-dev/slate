@@ -151,6 +151,17 @@ export function media_revoke_object_url(url) {
     URL.revokeObjectURL(url);
   }
 }
+
+export function download_data_url(filename, dataUrl) {
+  if (!dataUrl) return;
+  const anchor = document.createElement('a');
+  anchor.href = dataUrl;
+  anchor.download = filename || 'download';
+  anchor.rel = 'noopener';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
 "#)]
 extern "C" {
     pub fn highlight_markdown_code();
@@ -162,4 +173,5 @@ extern "C" {
     pub fn click_by_id(id: &str);
     pub fn media_create_object_url(bytes: &[u8], mime_type: &str) -> String;
     pub fn media_revoke_object_url(url: &str);
+    pub fn download_data_url(filename: &str, data_url: &str);
 }

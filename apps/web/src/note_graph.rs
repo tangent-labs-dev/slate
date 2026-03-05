@@ -52,6 +52,19 @@ pub fn closest_wiki_anchor(mut current: Element) -> Option<Element> {
     }
 }
 
+pub fn closest_ink_embed(mut current: Element) -> Option<Element> {
+    loop {
+        if current.get_attribute("data-ink-id").is_some() {
+            return Some(current);
+        }
+        if let Some(parent) = current.parent_element() {
+            current = parent;
+        } else {
+            return None;
+        }
+    }
+}
+
 pub fn propagate_renamed_title(notes: &mut [Note], old_title: &str, new_title: &str) -> Vec<Note> {
     let mut changed = Vec::new();
     for note in notes.iter_mut() {
