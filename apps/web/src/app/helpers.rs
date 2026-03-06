@@ -112,7 +112,9 @@ pub fn strip_ink_ref_blocks(content: &str, asset_id: &str) -> String {
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if !in_ink_block && trimmed.starts_with(":::ink") {
+        if !in_ink_block
+            && (trimmed.starts_with(":::whiteboard") || trimmed.starts_with(":::ink"))
+        {
             remove_current = trimmed.contains(&inline_marker);
             if trimmed.ends_with(":::") {
                 // Single-line token style, no block close expected.

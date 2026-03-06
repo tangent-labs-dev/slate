@@ -51,7 +51,7 @@ pub fn Toolbar(
                     "Video URL"
                 </button>
                 <button class="mode-btn" on:click=move |_| on_insert_ink.run(())>
-                    "Insert Ink"
+                    "Insert Whiteboard"
                 </button>
                 <button class="mode-btn" on:click=move |_| on_click_upload_video.run(())>
                     "Upload Video"

@@ -769,7 +769,7 @@ pub fn InkCanvasModal(
             return;
         };
         if let Ok(url) = canvas.to_data_url_with_type("image/png") {
-            download_data_url("ink-drawing.png", &url);
+            download_data_url("whiteboard-drawing.png", &url);
         }
     };
 
@@ -1201,13 +1201,13 @@ fn draw_stroke(
     ctx.save();
     ctx.set_global_alpha(stroke.opacity.clamp(0.05, 1.0));
     ctx.set_stroke_style_str(&stroke.color);
-    ctx.set_line_width((stroke.width.max(1.0) * zoom).max(1.0));
     ctx.set_line_join("round");
     ctx.set_line_cap("round");
-    ctx.begin_path();
 
     match stroke.tool {
         InkTool::Line | InkTool::Rectangle | InkTool::Circle => {
+            ctx.set_line_width(stroke_base_width(stroke, zoom));
+            ctx.begin_path();
             if stroke.points.len() >= 2 {
                 let a = stroke.points[0];
                 let b = stroke.points[1];
@@ -1230,8 +1230,14 @@ fn draw_stroke(
                     _ => {}
                 }
             }
+            ctx.stroke();
+        }
+        InkTool::Pen | InkTool::Highlighter => {
+            draw_pressure_sensitive_stroke(ctx, stroke, width, height, camera_x, camera_y, zoom);
         }
         _ => {
+            ctx.set_line_width(stroke_base_width(stroke, zoom));
+            ctx.begin_path();
             let first = stroke.points[0];
             let (fx, fy) =
                 world_to_screen(first.x, first.y, width, height, camera_x, camera_y, zoom);
@@ -1241,10 +1247,67 @@ fn draw_stroke(
                     world_to_screen(point.x, point.y, width, height, camera_x, camera_y, zoom);
                 ctx.line_to(px, py);
             }
+            ctx.stroke();
         }
     }
-    ctx.stroke();
     ctx.restore();
+}
+
+fn stroke_base_width(stroke: &InkStroke, zoom: f64) -> f64 {
+    (stroke.width.max(1.0) * zoom).max(1.0)
+}
+
+fn normalized_pressure(point: InkPoint) -> f64 {
+    let pressure = point.pressure.clamp(0.0, 1.0);
+    if pressure < 0.2 { 0.55 } else { pressure }
+}
+
+fn pressure_scaled_width(stroke: &InkStroke, pressure: f64, zoom: f64) -> f64 {
+    let base = stroke_base_width(stroke, zoom);
+    let factor = if matches!(stroke.tool, InkTool::Highlighter) {
+        0.75 + pressure * 0.4
+    } else {
+        0.35 + pressure
+    };
+    (base * factor).max(0.8)
+}
+
+fn draw_pressure_sensitive_stroke(
+    ctx: &CanvasRenderingContext2d,
+    stroke: &InkStroke,
+    width: f64,
+    height: f64,
+    camera_x: f64,
+    camera_y: f64,
+    zoom: f64,
+) {
+    let first = stroke.points[0];
+    let (mut prev_x, mut prev_y) =
+        world_to_screen(first.x, first.y, width, height, camera_x, camera_y, zoom);
+    let mut prev_pressure = normalized_pressure(first);
+
+    if stroke.points.len() == 1 {
+        let radius = pressure_scaled_width(stroke, prev_pressure, zoom) * 0.5;
+        ctx.set_fill_style_str(&stroke.color);
+        ctx.begin_path();
+        ctx.arc(prev_x, prev_y, radius, 0.0, std::f64::consts::TAU).ok();
+        ctx.fill();
+        return;
+    }
+
+    for point in stroke.points.iter().copied().skip(1) {
+        let (x, y) = world_to_screen(point.x, point.y, width, height, camera_x, camera_y, zoom);
+        let pressure = normalized_pressure(point);
+        let segment_pressure = (prev_pressure + pressure) * 0.5;
+        ctx.set_line_width(pressure_scaled_width(stroke, segment_pressure, zoom));
+        ctx.begin_path();
+        ctx.move_to(prev_x, prev_y);
+        ctx.line_to(x, y);
+        ctx.stroke();
+        prev_x = x;
+        prev_y = y;
+        prev_pressure = pressure;
+    }
 }
 
 fn draw_grid(

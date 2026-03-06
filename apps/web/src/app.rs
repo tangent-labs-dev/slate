@@ -540,26 +540,28 @@ pub fn App() -> impl IntoView {
 
     let insert_ink_block = move || {
         let Some(note_id) = active_note_id.get_untracked() else {
-            set_db_error.set(Some("Open a note before inserting ink.".to_string()));
+            set_db_error.set(Some(
+                "Open a note before inserting a whiteboard.".to_string(),
+            ));
             return;
         };
         let doc = InkDocument::blank(1400.0, 900.0);
         let payload = match to_vec(&doc) {
             Ok(bytes) => bytes,
             Err(e) => {
-                set_db_error.set(Some(format!("Failed to serialize ink document: {e}")));
+                set_db_error.set(Some(format!("Failed to serialize whiteboard document: {e}")));
                 return;
             }
         };
         let asset = MediaAsset::new(
             note_id,
-            "ink.json",
+            "whiteboard.json",
             "application/vnd.slate.ink+json",
             payload,
         );
         let asset_id = asset.id.clone();
         set_media_assets.update(|all| all.push(asset.clone()));
-        append_media_snippet(format!(":::ink {{\"id\":\"{}\"}} :::", asset_id));
+        append_media_snippet(format!(":::whiteboard {{\"id\":\"{}\"}} :::", asset_id));
         set_ink_editor_session.set(Some(InkEditorSession {
             asset_id: asset_id.clone(),
         }));
@@ -579,7 +581,7 @@ pub fn App() -> impl IntoView {
             .into_iter()
             .any(|asset| asset.id == asset_id);
         if !exists {
-            set_db_error.set(Some("Ink asset not found.".to_string()));
+            set_db_error.set(Some("Whiteboard asset not found.".to_string()));
             return;
         }
         set_ink_editor_session.set(Some(InkEditorSession { asset_id }));
@@ -589,7 +591,7 @@ pub fn App() -> impl IntoView {
         let payload = match to_vec(&document) {
             Ok(bytes) => bytes,
             Err(e) => {
-                set_db_error.set(Some(format!("Failed to save ink document: {e}")));
+                set_db_error.set(Some(format!("Failed to save whiteboard document: {e}")));
                 return;
             }
         };
@@ -604,7 +606,9 @@ pub fn App() -> impl IntoView {
         });
 
         let Some(asset) = maybe_asset else {
-            set_db_error.set(Some("Ink asset disappeared before save.".to_string()));
+            set_db_error.set(Some(
+                "Whiteboard asset disappeared before save.".to_string(),
+            ));
             return;
         };
         spawn_local({

@@ -140,7 +140,7 @@ pub fn collect_slate_ink_ids(markdown: &str) -> Vec<String> {
             continue;
         }
 
-        if pending_ink_id.is_none() && trimmed.starts_with(":::ink") {
+        if pending_ink_id.is_none() && is_whiteboard_block_start(trimmed) {
             if let Some(id) = parse_ink_id(trimmed) {
                 // Single-line marker is canonical.
                 if !trimmed.ends_with(":::") {
@@ -190,7 +190,7 @@ pub fn rewrite_ink_blocks_to_html(
             continue;
         }
 
-        if trimmed.starts_with(":::ink") {
+        if is_whiteboard_block_start(trimmed) {
             if let Some(id) = parse_ink_id(trimmed) {
                 let safe_id = escape_html(&id);
                 let raw_name = name_index
@@ -317,6 +317,10 @@ fn parse_ink_id(line: &str) -> Option<String> {
     Some(id.to_string())
 }
 
+fn is_whiteboard_block_start(trimmed: &str) -> bool {
+    trimmed.starts_with(":::whiteboard") || trimmed.starts_with(":::ink")
+}
+
 fn is_fence_toggle(trimmed: &str) -> bool {
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
@@ -424,7 +428,7 @@ mod tests {
     #[test]
     fn collects_ink_ids_from_blocks() {
         let input = r#"
-:::ink {"id":"ink-a"}
+:::whiteboard {"id":"ink-a"}
 :::
 
 :::ink {"id":"ink-b"}
@@ -439,7 +443,7 @@ some ignored payload
     fn rewrites_ink_blocks_to_placeholders() {
         let mut thumbs = HashMap::new();
         thumbs.insert("ink-a".to_string(), "data:image/png;base64,abc".to_string());
-        let input = "before\n:::ink {\"id\":\"ink-a\"}\n:::\nafter";
+        let input = "before\n:::whiteboard {\"id\":\"ink-a\"}\n:::\nafter";
         let mut names = HashMap::new();
         names.insert("ink-a".to_string(), "Session Diagram".to_string());
         let out = rewrite_ink_blocks_to_html(input, &thumbs, &names);
