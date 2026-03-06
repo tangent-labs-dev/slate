@@ -13,11 +13,15 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
-use web_sys::{CanvasRenderingContext2d, Element, HtmlCanvasElement, HtmlImageElement, window};
+use web_sys::{
+    CanvasRenderingContext2d, Element, HtmlCanvasElement, HtmlImageElement,
+    PointerEvent as WebPointerEvent, window,
+};
 
 const MIN_ZOOM: f64 = 0.2;
 const MAX_ZOOM: f64 = 4.0;
 const INK_IMAGE_UPLOAD_INPUT_ID: &str = "ink-image-upload-input";
+const PEN_OUTLINE_CAP_STEPS: usize = 18;
 
 #[component]
 pub fn InkCanvasModal(
@@ -73,7 +77,8 @@ pub fn InkCanvasModal(
     let backing_canvas_width = (canvas_width as f64 * pixel_ratio).round() as u32;
     let backing_canvas_height = (canvas_height as f64 * pixel_ratio).round() as u32;
 
-    let to_world_point = move |ev: PointerEvent| -> Option<InkPoint> {
+    let to_world_from_client =
+        move |client_x: f64, client_y: f64, pressure: f64| -> Option<InkPoint> {
         let canvas = canvas_ref.get()?;
         let rect = canvas.get_bounding_client_rect();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -81,8 +86,8 @@ pub fn InkCanvasModal(
         }
         let logical_width = canvas.width() as f64 / pixel_ratio;
         let logical_height = canvas.height() as f64 / pixel_ratio;
-        let sx = (ev.client_x() as f64 - rect.left()) * logical_width / rect.width();
-        let sy = (ev.client_y() as f64 - rect.top()) * logical_height / rect.height();
+        let sx = (client_x - rect.left()) * logical_width / rect.width();
+        let sy = (client_y - rect.top()) * logical_height / rect.height();
         let (wx, wy) = screen_to_world(
             sx,
             sy,
@@ -95,8 +100,43 @@ pub fn InkCanvasModal(
         Some(InkPoint {
             x: wx,
             y: wy,
-            pressure: pointer_pressure(&ev),
+            pressure,
         })
+    };
+    let to_world_point = move |ev: &PointerEvent| -> Option<InkPoint> {
+        to_world_from_client(
+            ev.client_x() as f64,
+            ev.client_y() as f64,
+            pointer_pressure(ev),
+        )
+    };
+    let coalesced_world_points = move |ev: &PointerEvent| -> Vec<InkPoint> {
+        let mut out = Vec::new();
+        let coalesced = ev.get_coalesced_events();
+        let len = coalesced.length();
+        if len > 0 {
+            for idx in 0..len {
+                if let Ok(raw) = coalesced.get(idx).dyn_into::<WebPointerEvent>()
+                    && let Some(point) = to_world_from_client(
+                        raw.client_x() as f64,
+                        raw.client_y() as f64,
+                        pointer_pressure(&raw),
+                    )
+                {
+                    out.push(point);
+                }
+            }
+        }
+        if out.is_empty()
+            && let Some(point) = to_world_from_client(
+                ev.client_x() as f64,
+                ev.client_y() as f64,
+                pointer_pressure(ev),
+            )
+        {
+            out.push(point);
+        }
+        out
     };
     let client_to_screen = move |client_x: f64, client_y: f64| -> Option<(f64, f64, f64, f64)> {
         let canvas = canvas_ref.get()?;
@@ -175,7 +215,7 @@ pub fn InkCanvasModal(
         {
             let _ = target.set_pointer_capture(ev.pointer_id());
         }
-        let Some(point) = to_world_point(ev) else {
+        let Some(point) = to_world_point(&ev) else {
             return;
         };
         if let Some(embed) = embeds
@@ -199,7 +239,7 @@ pub fn InkCanvasModal(
         {
             let _ = target.set_pointer_capture(ev.pointer_id());
         }
-        let Some(point) = to_world_point(ev) else {
+        let Some(point) = to_world_point(&ev) else {
             return;
         };
         if let Some(embed) = embeds
@@ -275,7 +315,7 @@ pub fn InkCanvasModal(
             return;
         }
 
-        let Some(point) = to_world_point(ev) else {
+        let Some(point) = to_world_point(&ev) else {
             return;
         };
         set_selected_embed_id.set(None);
@@ -350,7 +390,7 @@ pub fn InkCanvasModal(
             ev.prevent_default();
         }
         if let Some(embed_id) = resizing_embed_id.get_untracked() {
-            let Some(point) = to_world_point(ev) else {
+            let Some(point) = to_world_point(&ev) else {
                 return;
             };
             let (sx, sy) = resizing_start_point.get_untracked();
@@ -366,7 +406,7 @@ pub fn InkCanvasModal(
             return;
         }
         if let Some(embed_id) = dragging_embed_id.get_untracked() {
-            let Some(point) = to_world_point(ev) else {
+            let Some(point) = to_world_point(&ev) else {
                 return;
             };
             let (ox, oy) = dragging_embed_offset.get_untracked();
@@ -379,7 +419,7 @@ pub fn InkCanvasModal(
             return;
         }
         if dragging_selected_strokes.get_untracked() {
-            let Some(point) = to_world_point(ev) else {
+            let Some(point) = to_world_point(&ev) else {
                 return;
             };
             let Some(last) = dragging_strokes_last_point.get_untracked() else {
@@ -421,21 +461,24 @@ pub fn InkCanvasModal(
         if !is_drawing.get_untracked() {
             return;
         }
-        let Some(point) = to_world_point(ev) else {
+        let Some(point) = to_world_point(&ev) else {
             return;
         };
         match tool.get_untracked() {
             InkTool::Pen | InkTool::Highlighter => {
                 let zoom_level = zoom.get_untracked().max(0.2);
-                let min_distance_sq = (0.35 / zoom_level).powi(2);
+                let min_distance_sq = (0.08 / zoom_level).powi(2);
+                let samples = coalesced_world_points(&ev);
                 set_draft_points.update(|points| {
-                    let should_push = points.last().is_none_or(|last| {
-                        let dx = point.x - last.x;
-                        let dy = point.y - last.y;
-                        (dx * dx + dy * dy) >= min_distance_sq
-                    });
-                    if should_push {
-                        points.push(point);
+                    for sample in samples {
+                        let should_push = points.last().is_none_or(|last| {
+                            let dx = sample.x - last.x;
+                            let dy = sample.y - last.y;
+                            (dx * dx + dy * dy) >= min_distance_sq
+                        });
+                        if should_push {
+                            points.push(sample);
+                        }
                     }
                 })
             }
@@ -1328,34 +1371,360 @@ fn draw_smooth_polyline(
     ctx.stroke();
 }
 
-fn pressure_scaled_width(stroke: &InkStroke, pressure: f64, zoom: f64) -> f64 {
-    let base = stroke_base_width(stroke, zoom);
+fn pressure_scaled_width(base_width: f64, pressure: f64) -> f64 {
     let normalized = pressure.clamp(0.0, 1.0);
-    (base * (0.55 + normalized * 0.9)).max(0.9)
+    let eased = normalized.powf(0.7);
+    (base_width * (0.34 + eased * 0.76)).max(0.85)
 }
 
 fn infer_pressure_fallback(screen_points: &mut [(f64, f64, f64)]) {
     if screen_points.is_empty() {
         return;
     }
-    let (min_pressure, max_pressure) = screen_points
-        .iter()
-        .fold((1.0f64, 0.0f64), |(min_p, max_p), p| {
-            (min_p.min(p.2), max_p.max(p.2))
-        });
-    if (max_pressure - min_pressure) >= 0.04 {
+    let (min_pressure, max_pressure, sum_pressure) = screen_points.iter().fold(
+        (1.0f64, 0.0f64, 0.0f64),
+        |(min_p, max_p, sum_p), p| (min_p.min(p.2), max_p.max(p.2), sum_p + p.2),
+    );
+    let range = max_pressure - min_pressure;
+    let avg = sum_pressure / screen_points.len() as f64;
+
+    if range < 0.01 {
+        if (avg - 0.5).abs() < 0.06 && screen_points.len() > 1 {
+            // Mouse input usually reports a flat pressure around 0.5; simulate light dynamics from speed.
+            let mut simulated = vec![0.72; screen_points.len()];
+            for i in 0..screen_points.len() {
+                let prev = if i == 0 {
+                    screen_points[i]
+                } else {
+                    screen_points[i - 1]
+                };
+                let next = if i + 1 >= screen_points.len() {
+                    screen_points[i]
+                } else {
+                    screen_points[i + 1]
+                };
+                let speed = ((next.0 - prev.0).powi(2) + (next.1 - prev.1).powi(2)).sqrt();
+                let pressure = (1.0 - (speed / 7.5).clamp(0.0, 1.0)).powf(0.65);
+                simulated[i] = (0.28 + pressure * 0.64).clamp(0.18, 0.95);
+            }
+            for i in 1..simulated.len() {
+                simulated[i] = simulated[i - 1] * 0.25 + simulated[i] * 0.75;
+            }
+            for i in (0..simulated.len() - 1).rev() {
+                simulated[i] = simulated[i + 1] * 0.2 + simulated[i] * 0.8;
+            }
+            for (idx, point) in screen_points.iter_mut().enumerate() {
+                point.2 = simulated[idx];
+            }
+            return;
+        }
+
+        let fallback = if (avg - 0.5).abs() < 0.06 {
+            0.72
+        } else {
+            avg.clamp(0.08, 1.0)
+        };
         for p in screen_points.iter_mut() {
-            p.2 = p.2.clamp(0.05, 1.0);
+            p.2 = fallback;
         }
         return;
     }
+
+    if range < 0.08 {
+        for p in screen_points.iter_mut() {
+            let expanded = (p.2 - min_pressure) / range.max(0.0001);
+            let expanded = 0.1 + expanded * 0.9;
+            p.2 = (p.2 * 0.4 + expanded * 0.6).clamp(0.05, 1.0);
+        }
+        return;
+    }
+
     for p in screen_points.iter_mut() {
-        p.2 = 0.72;
+        p.2 = p.2.clamp(0.05, 1.0);
     }
 }
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
+}
+
+fn smooth_pressure_points(points: &[(f64, f64, f64)], iterations: usize) -> Vec<(f64, f64, f64)> {
+    let mut current = points.to_vec();
+    for _ in 0..iterations {
+        if current.len() < 3 {
+            break;
+        }
+        let mut next = Vec::with_capacity(current.len() * 2);
+        next.push(current[0]);
+        for i in 0..current.len() - 1 {
+            let (x1, y1, p1) = current[i];
+            let (x2, y2, p2) = current[i + 1];
+            next.push((
+                x1 * 0.75 + x2 * 0.25,
+                y1 * 0.75 + y2 * 0.25,
+                p1 * 0.75 + p2 * 0.25,
+            ));
+            next.push((
+                x1 * 0.25 + x2 * 0.75,
+                y1 * 0.25 + y2 * 0.75,
+                p1 * 0.25 + p2 * 0.75,
+            ));
+        }
+        next.push(*current.last().unwrap_or(&current[0]));
+        current = next;
+    }
+    current
+}
+
+fn normalize(vx: f64, vy: f64) -> (f64, f64) {
+    let len = (vx * vx + vy * vy).sqrt();
+    if len <= f64::EPSILON {
+        (0.0, 0.0)
+    } else {
+        (vx / len, vy / len)
+    }
+}
+
+fn filter_close_pressure_points(
+    points: &[(f64, f64, f64)],
+    min_distance: f64,
+) -> Vec<(f64, f64, f64)> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let min_distance_sq = min_distance * min_distance;
+    let mut filtered = Vec::with_capacity(points.len());
+    filtered.push(points[0]);
+    for point in points.iter().skip(1).copied() {
+        let last = filtered.last_mut().expect("filtered has at least one point");
+        let dx = point.0 - last.0;
+        let dy = point.1 - last.1;
+        if (dx * dx + dy * dy) >= min_distance_sq {
+            filtered.push(point);
+        } else {
+            last.2 = (last.2 * 0.7 + point.2 * 0.3).clamp(0.05, 1.0);
+        }
+    }
+    if filtered.len() == 1 && points.len() > 1 {
+        filtered.push(*points.last().unwrap_or(&points[0]));
+    }
+    filtered
+}
+
+fn resample_pressure_points(points: &[(f64, f64, f64)], spacing: f64) -> Vec<(f64, f64, f64)> {
+    if points.len() < 2 {
+        return points.to_vec();
+    }
+    let spacing = spacing.max(0.05);
+    let mut out = Vec::with_capacity(points.len() * 2);
+    out.push(points[0]);
+    let mut remaining = spacing;
+    for segment in points.windows(2) {
+        let (x1, y1, p1) = segment[0];
+        let (x2, y2, p2) = segment[1];
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let segment_len = (dx * dx + dy * dy).sqrt();
+        if segment_len <= 0.00001 {
+            continue;
+        }
+        while remaining <= segment_len {
+            let t = remaining / segment_len;
+            out.push((lerp(x1, x2, t), lerp(y1, y2, t), lerp(p1, p2, t)));
+            remaining += spacing;
+        }
+        remaining -= segment_len;
+    }
+    if let Some(last) = points.last().copied()
+        && out.last().is_none_or(|prev| {
+            let dx = last.0 - prev.0;
+            let dy = last.1 - prev.1;
+            (dx * dx + dy * dy) > 0.0001
+        })
+    {
+        out.push(last);
+    }
+    out
+}
+
+fn circular_outline(cx: f64, cy: f64, radius: f64, steps: usize) -> Vec<(f64, f64)> {
+    let steps = steps.max(10);
+    (0..steps)
+        .map(|idx| {
+            let theta = std::f64::consts::TAU * idx as f64 / steps as f64;
+            (cx + radius * theta.cos(), cy + radius * theta.sin())
+        })
+        .collect()
+}
+
+fn build_pressure_outline(points: &[(f64, f64, f64)], base_width: f64) -> Vec<(f64, f64)> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    if points.len() == 1 {
+        let (x, y, pressure) = points[0];
+        let radius = pressure_scaled_width(base_width, pressure) * 0.5;
+        return circular_outline(x, y, radius.max(0.75), PEN_OUTLINE_CAP_STEPS * 2);
+    }
+
+    let len = points.len();
+    let mut tangents = vec![(1.0, 0.0); len];
+    for i in 0..len {
+        let prev = if i == 0 { points[i] } else { points[i - 1] };
+        let next = if i + 1 >= len { points[i] } else { points[i + 1] };
+        let (mut tx, mut ty) = normalize(next.0 - prev.0, next.1 - prev.1);
+        if tx == 0.0 && ty == 0.0 {
+            if i > 0 {
+                (tx, ty) = tangents[i - 1];
+            } else {
+                let (fx, fy) = normalize(points[1].0 - points[0].0, points[1].1 - points[0].1);
+                if fx == 0.0 && fy == 0.0 {
+                    tx = 1.0;
+                    ty = 0.0;
+                } else {
+                    tx = fx;
+                    ty = fy;
+                }
+            }
+        }
+        tangents[i] = (tx, ty);
+    }
+
+    let mut radii = points
+        .iter()
+        .map(|point| pressure_scaled_width(base_width, point.2) * 0.5)
+        .collect::<Vec<_>>();
+    for i in 1..radii.len() {
+        radii[i] = radii[i - 1] * 0.35 + radii[i] * 0.65;
+    }
+    for i in (0..radii.len() - 1).rev() {
+        radii[i] = radii[i + 1] * 0.25 + radii[i] * 0.75;
+    }
+
+    let mut left = Vec::with_capacity(len);
+    let mut right = Vec::with_capacity(len);
+    for idx in 0..len {
+        let (tx, ty) = tangents[idx];
+        let nx = -ty;
+        let ny = tx;
+        let radius = radii[idx].max(0.5);
+        let (x, y, _) = points[idx];
+        left.push((x + nx * radius, y + ny * radius));
+        right.push((x - nx * radius, y - ny * radius));
+    }
+
+    let mut outline = Vec::with_capacity(len * 2 + PEN_OUTLINE_CAP_STEPS * 2 + 4);
+    outline.extend(left.iter().copied());
+
+    let (end_tx, end_ty) = tangents[len - 1];
+    let end_nx = -end_ty;
+    let end_ny = end_tx;
+    let (end_x, end_y, _) = points[len - 1];
+    let end_r = radii[len - 1].max(0.5);
+    for step in 1..PEN_OUTLINE_CAP_STEPS {
+        let t = step as f64 / PEN_OUTLINE_CAP_STEPS as f64;
+        let theta = std::f64::consts::PI * t;
+        let ux = end_nx * theta.cos() + end_tx * theta.sin();
+        let uy = end_ny * theta.cos() + end_ty * theta.sin();
+        outline.push((end_x + ux * end_r, end_y + uy * end_r));
+    }
+
+    for point in right.iter().rev().copied() {
+        outline.push(point);
+    }
+
+    let (start_tx, start_ty) = tangents[0];
+    let start_nx = -start_ty;
+    let start_ny = start_tx;
+    let (start_x, start_y, _) = points[0];
+    let start_r = radii[0].max(0.5);
+    for step in 1..PEN_OUTLINE_CAP_STEPS {
+        let t = step as f64 / PEN_OUTLINE_CAP_STEPS as f64;
+        let theta = std::f64::consts::PI * t;
+        let ux = -start_nx * theta.cos() - start_tx * theta.sin();
+        let uy = -start_ny * theta.cos() - start_ty * theta.sin();
+        outline.push((start_x + ux * start_r, start_y + uy * start_r));
+    }
+
+    outline
+}
+
+fn fill_smooth_closed_path(ctx: &CanvasRenderingContext2d, outline: &[(f64, f64)]) {
+    if outline.len() < 3 {
+        return;
+    }
+
+    let mut cleaned: Vec<(f64, f64)> = Vec::with_capacity(outline.len());
+    for point in outline.iter().copied() {
+        let should_push = cleaned.last().is_none_or(|last| {
+            let dx = point.0 - last.0;
+            let dy = point.1 - last.1;
+            (dx * dx + dy * dy) > 0.0001
+        });
+        if should_push {
+            cleaned.push(point);
+        }
+    }
+    if cleaned.len() < 3 {
+        return;
+    }
+
+    let start_mid = (
+        (cleaned[cleaned.len() - 1].0 + cleaned[0].0) * 0.5,
+        (cleaned[cleaned.len() - 1].1 + cleaned[0].1) * 0.5,
+    );
+    ctx.begin_path();
+    ctx.move_to(start_mid.0, start_mid.1);
+    for idx in 0..cleaned.len() {
+        let current = cleaned[idx];
+        let next = cleaned[(idx + 1) % cleaned.len()];
+        let mid = ((current.0 + next.0) * 0.5, (current.1 + next.1) * 0.5);
+        ctx.quadratic_curve_to(current.0, current.1, mid.0, mid.1);
+    }
+    ctx.close_path();
+    ctx.fill();
+}
+
+fn draw_pressure_outline(
+    ctx: &CanvasRenderingContext2d,
+    color: &str,
+    points: &[(f64, f64, f64)],
+    base_width: f64,
+) {
+    if points.is_empty() {
+        return;
+    }
+
+    let mut working = points.to_vec();
+    infer_pressure_fallback(&mut working);
+    let filtered = filter_close_pressure_points(&working, 0.07);
+    if filtered.is_empty() {
+        return;
+    }
+    let spacing = (base_width * 0.22).clamp(0.32, 1.1);
+    let resampled = resample_pressure_points(&filtered, spacing);
+    let smoothing_iterations = if resampled.len() > 900 { 1 } else { 2 };
+    let smoothed = smooth_pressure_points(&resampled, smoothing_iterations);
+    if smoothed.is_empty() {
+        return;
+    }
+
+    if smoothed.len() == 1 {
+        let (x, y, pressure) = smoothed[0];
+        let radius = pressure_scaled_width(base_width, pressure) * 0.5;
+        ctx.set_fill_style_str(color);
+        ctx.begin_path();
+        ctx.arc(x, y, radius, 0.0, std::f64::consts::TAU).ok();
+        ctx.fill();
+        return;
+    }
+
+    let outline = build_pressure_outline(&smoothed, base_width);
+    if outline.len() < 3 {
+        return;
+    }
+    ctx.set_fill_style_str(color);
+    fill_smooth_closed_path(ctx, &outline);
 }
 
 fn draw_pressure_sensitive_stroke(
@@ -1367,7 +1736,7 @@ fn draw_pressure_sensitive_stroke(
     camera_y: f64,
     zoom: f64,
 ) {
-    let mut screen_points = stroke
+    let screen_points = stroke
         .points
         .iter()
         .map(|point| {
@@ -1375,39 +1744,12 @@ fn draw_pressure_sensitive_stroke(
             (sx, sy, point.pressure.clamp(0.0, 1.0))
         })
         .collect::<Vec<_>>();
-    if screen_points.is_empty() {
-        return;
-    }
-    infer_pressure_fallback(&mut screen_points);
-    ctx.set_fill_style_str(&stroke.color);
-
-    if screen_points.len() == 1 {
-        let (x, y, pressure) = screen_points[0];
-        let radius = pressure_scaled_width(stroke, pressure, zoom) * 0.5;
-        ctx.begin_path();
-        ctx.arc(x, y, radius, 0.0, std::f64::consts::TAU).ok();
-        ctx.fill();
-        return;
-    }
-
-    let (mut prev_x, mut prev_y, mut prev_pressure) = screen_points[0];
-    for (x, y, pressure) in screen_points.into_iter().skip(1) {
-        let distance = ((x - prev_x).powi(2) + (y - prev_y).powi(2)).sqrt();
-        let steps = ((distance / 0.45).ceil() as usize).clamp(1, 512);
-        for step in 0..=steps {
-            let t = step as f64 / steps as f64;
-            let px = lerp(prev_x, x, t);
-            let py = lerp(prev_y, y, t);
-            let p = lerp(prev_pressure, pressure, t);
-            let radius = pressure_scaled_width(stroke, p, zoom) * 0.5;
-            ctx.begin_path();
-            ctx.arc(px, py, radius, 0.0, std::f64::consts::TAU).ok();
-            ctx.fill();
-        }
-        prev_x = x;
-        prev_y = y;
-        prev_pressure = pressure;
-    }
+    draw_pressure_outline(
+        ctx,
+        &stroke.color,
+        &screen_points,
+        stroke_base_width(stroke, zoom),
+    );
 }
 
 fn draw_grid(
@@ -1637,7 +1979,7 @@ fn draw_stroke_thumbnail(
     if stroke.points.is_empty() {
         return;
     }
-    let map = |p: InkPoint| -> (f64, f64) {
+    let map_xy = |p: InkPoint| -> (f64, f64) {
         (
             (p.x - min_x) * scale + offset_x,
             (p.y - min_y) * scale + offset_y,
@@ -1646,19 +1988,31 @@ fn draw_stroke_thumbnail(
 
     ctx.save();
     ctx.set_global_alpha(stroke.opacity.clamp(0.05, 1.0));
-    ctx.set_stroke_style_str(&stroke.color);
-    ctx.set_line_width((stroke.width * scale).clamp(1.0, 14.0));
     ctx.set_line_join("round");
     ctx.set_line_cap("round");
-    ctx.begin_path();
 
     match stroke.tool {
+        InkTool::Pen => {
+            let points = stroke
+                .points
+                .iter()
+                .map(|point| {
+                    let (x, y) = map_xy(*point);
+                    (x, y, point.pressure.clamp(0.0, 1.0))
+                })
+                .collect::<Vec<_>>();
+            let base_width = (stroke.width * scale).clamp(1.0, 14.0);
+            draw_pressure_outline(ctx, &stroke.color, &points, base_width);
+        }
         InkTool::Line | InkTool::Rectangle | InkTool::Circle => {
+            ctx.set_stroke_style_str(&stroke.color);
+            ctx.set_line_width((stroke.width * scale).clamp(1.0, 14.0));
+            ctx.begin_path();
             if stroke.points.len() >= 2 {
                 let a = stroke.points[0];
                 let b = stroke.points[1];
-                let (ax, ay) = map(a);
-                let (bx, by) = map(b);
+                let (ax, ay) = map_xy(a);
+                let (bx, by) = map_xy(b);
                 match stroke.tool {
                     InkTool::Line => {
                         ctx.move_to(ax, ay);
@@ -1676,18 +2030,45 @@ fn draw_stroke_thumbnail(
                     _ => {}
                 }
             }
+            ctx.stroke();
         }
         _ => {
-            let first = stroke.points[0];
-            let (fx, fy) = map(first);
-            ctx.move_to(fx, fy);
-            for point in stroke.points.iter().skip(1) {
-                let (px, py) = map(*point);
-                ctx.line_to(px, py);
+            let screen_points = stroke
+                .points
+                .iter()
+                .map(|point| map_xy(*point))
+                .collect::<Vec<_>>();
+            if screen_points.len() == 1 {
+                let radius = (stroke.width * scale * 0.5).clamp(0.8, 7.0);
+                ctx.set_fill_style_str(&stroke.color);
+                ctx.begin_path();
+                ctx.arc(
+                    screen_points[0].0,
+                    screen_points[0].1,
+                    radius,
+                    0.0,
+                    std::f64::consts::TAU,
+                )
+                .ok();
+                ctx.fill();
+            } else {
+                ctx.set_stroke_style_str(&stroke.color);
+                ctx.set_line_width((stroke.width * scale).clamp(1.0, 14.0));
+                ctx.begin_path();
+                ctx.move_to(screen_points[0].0, screen_points[0].1);
+                for i in 1..screen_points.len() - 1 {
+                    let current = screen_points[i];
+                    let next = screen_points[i + 1];
+                    let mid_x = (current.0 + next.0) * 0.5;
+                    let mid_y = (current.1 + next.1) * 0.5;
+                    ctx.quadratic_curve_to(current.0, current.1, mid_x, mid_y);
+                }
+                let last = screen_points[screen_points.len() - 1];
+                ctx.line_to(last.0, last.1);
+                ctx.stroke();
             }
         }
     }
-    ctx.stroke();
     ctx.restore();
 }
 
