@@ -164,6 +164,7 @@ pub fn collect_slate_ink_ids(markdown: &str) -> Vec<String> {
 pub fn rewrite_ink_blocks_to_html(
     markdown: &str,
     thumbnail_index: &HashMap<String, String>,
+    name_index: &HashMap<String, String>,
 ) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut in_code_fence = false;
@@ -192,14 +193,19 @@ pub fn rewrite_ink_blocks_to_html(
         if trimmed.starts_with(":::ink") {
             if let Some(id) = parse_ink_id(trimmed) {
                 let safe_id = escape_html(&id);
+                let raw_name = name_index
+                    .get(&id)
+                    .map(std::string::String::as_str)
+                    .unwrap_or("Whiteboard");
+                let safe_name = escape_html(raw_name);
                 if let Some(thumb) = thumbnail_index.get(&id) {
                     let safe_thumb = escape_html(thumb);
                     out.push_str(&format!(
-                        r#"<div class="ink-embed" data-ink-id="{safe_id}"><img class="ink-embed-thumb" src="{safe_thumb}" alt="Ink drawing" loading="lazy" /></div>"#
+                        r#"<div class="ink-embed" data-ink-id="{safe_id}" title="{safe_name}"><img class="ink-embed-thumb" src="{safe_thumb}" alt="{safe_name}" loading="lazy" /><div class="ink-embed-name">{safe_name}</div></div>"#
                     ));
                 } else {
                     out.push_str(&format!(
-                        r#"<div class="ink-embed" data-ink-id="{safe_id}"><div class="ink-embed-empty">Ink drawing</div></div>"#
+                        r#"<div class="ink-embed" data-ink-id="{safe_id}" title="{safe_name}"><div class="ink-embed-empty">{safe_name}</div></div>"#
                     ));
                 }
                 out.push('\n');
@@ -434,9 +440,12 @@ some ignored payload
         let mut thumbs = HashMap::new();
         thumbs.insert("ink-a".to_string(), "data:image/png;base64,abc".to_string());
         let input = "before\n:::ink {\"id\":\"ink-a\"}\n:::\nafter";
-        let out = rewrite_ink_blocks_to_html(input, &thumbs);
+        let mut names = HashMap::new();
+        names.insert("ink-a".to_string(), "Session Diagram".to_string());
+        let out = rewrite_ink_blocks_to_html(input, &thumbs, &names);
         assert!(out.contains("data-ink-id=\"ink-a\""));
         assert!(out.contains("ink-embed-thumb"));
+        assert!(out.contains("Session Diagram"));
         assert!(out.contains("before"));
         assert!(out.contains("after"));
     }

@@ -25,6 +25,7 @@ pub fn InkCanvasModal(
     on_save: Callback<InkDocument>,
 ) -> impl IntoView {
     let (tool, set_tool) = signal(InkTool::Pen);
+    let (board_name, set_board_name) = signal(initial_document.name.clone());
     let (background, set_background) = signal(sanitize_hex_color(&initial_document.background));
     let (color, set_color) = signal("#e5e7eb".to_string());
     let (stroke_width, set_stroke_width) = signal(3.0f64);
@@ -430,6 +431,9 @@ pub fn InkCanvasModal(
     };
 
     let on_key_down = move |ev: KeyboardEvent| {
+        if keyboard_event_targets_text_input(&ev) {
+            return;
+        }
         if !(ev.meta_key() || ev.ctrl_key() || ev.alt_key()) {
             match ev.key().to_ascii_lowercase().as_str() {
                 "v" => set_tool.set(InkTool::Select),
@@ -628,6 +632,7 @@ pub fn InkCanvasModal(
     let on_save_click = move |_| {
         let mut doc = initial_document_for_save.clone();
         doc.strokes_on_top = true;
+        doc.name = sanitize_ink_name(&board_name.get_untracked());
         doc.background = background.get_untracked();
         doc.strokes = strokes.get_untracked();
         doc.embeds = embeds.get_untracked();
@@ -673,6 +678,17 @@ pub fn InkCanvasModal(
                         </button>
                     </div>
                     <div class="ink-actions-dock">
+                        <label class="ink-name-field" title="Whiteboard name">
+                            <span>"Name"</span>
+                            <input
+                                class="ink-name-input"
+                                type="text"
+                                maxlength="80"
+                                prop:value=move || board_name.get()
+                                on:input=move |ev| set_board_name.set(event_target_value(&ev))
+                                placeholder="Whiteboard"
+                            />
+                        </label>
                         <span class="ink-zoom-badge">{move || format!("{:.0}%", zoom.get() * 100.0)}</span>
                         <button class="mode-btn ink-action-btn" title="Undo (Cmd/Ctrl+Z)" on:click=on_undo>"Undo"</button>
                         <button class="mode-btn ink-action-btn" title="Redo (Cmd/Ctrl+Y)" on:click=on_redo>"Redo"</button>
@@ -1447,4 +1463,27 @@ fn sanitize_hex_color(value: &str) -> String {
     } else {
         "#0b1020".to_string()
     }
+}
+
+fn sanitize_ink_name(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "Whiteboard".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
+}
+
+fn keyboard_event_targets_text_input(ev: &KeyboardEvent) -> bool {
+    ev.target()
+        .and_then(|target| target.dyn_into::<Element>().ok())
+        .map(|el| {
+            let tag = el.tag_name().to_ascii_lowercase();
+            let editable = el
+                .get_attribute("contenteditable")
+                .map(|value| !value.eq_ignore_ascii_case("false"))
+                .unwrap_or(false);
+            tag == "input" || tag == "textarea" || editable
+        })
+        .unwrap_or(false)
 }

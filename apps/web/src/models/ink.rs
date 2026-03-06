@@ -5,6 +5,8 @@ pub struct InkDocument {
     pub version: u32,
     pub width: f64,
     pub height: f64,
+    #[serde(default = "default_ink_name")]
+    pub name: String,
     #[serde(default = "default_background")]
     pub background: String,
     #[serde(default = "default_true")]
@@ -23,6 +25,7 @@ impl InkDocument {
             version: 1,
             width,
             height,
+            name: default_ink_name(),
             background: default_background(),
             strokes_on_top: true,
             strokes: Vec::new(),
@@ -95,4 +98,8 @@ fn default_true() -> bool {
 
 fn default_background() -> String {
     "#0b1020".to_string()
+}
+
+fn default_ink_name() -> String {
+    "Whiteboard".to_string()
 }

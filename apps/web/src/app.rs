@@ -104,9 +104,36 @@ pub fn App() -> impl IntoView {
     });
 
     let sorted_uploads = Memo::new(move |_| {
-        let mut uploads = media_assets.get();
+        let mut uploads = media_assets
+            .get()
+            .into_iter()
+            .filter(|asset| asset.mime_type != "application/vnd.slate.ink+json")
+            .collect::<Vec<_>>();
         uploads.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         uploads
+    });
+
+    let sorted_whiteboards = Memo::new(move |_| {
+        let mut boards = media_assets
+            .get()
+            .into_iter()
+            .filter(|asset| asset.mime_type == "application/vnd.slate.ink+json")
+            .collect::<Vec<_>>();
+        boards.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
+        boards
+    });
+
+    let active_note_whiteboards = Memo::new(move |_| {
+        if let Some(note) = active_note.get() {
+            let ink_ids = collect_slate_ink_ids(&note.content);
+            sorted_whiteboards
+                .get()
+                .into_iter()
+                .filter(|asset| ink_ids.iter().any(|id| id == &asset.id))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
     });
 
     let active_note_uploads = Memo::new(move |_| {
@@ -150,16 +177,24 @@ pub fn App() -> impl IntoView {
             })
             .collect::<std::collections::HashMap<_, _>>()
     });
+    let ink_name_index = Memo::new(move |_| {
+        ink_documents
+            .get()
+            .into_iter()
+            .map(|(id, doc)| (id, doc.name))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
 
     let preview_html = Memo::new(move |_| {
         if matches!(mode.get(), EditorMode::Preview | EditorMode::Split) {
             let title_map = title_index.get();
             let urls = media_url_index.get();
             let thumbnails = ink_thumbnail_index.get();
+            let ink_names = ink_name_index.get();
             active_note
                 .get()
                 .map(|n| {
-                    let with_ink = rewrite_ink_blocks_to_html(&n.content, &thumbnails);
+                    let with_ink = rewrite_ink_blocks_to_html(&n.content, &thumbnails, &ink_names);
                     let rendered = render_markdown(&with_ink, &title_map);
                     let resolved = resolve_slate_media_urls(&rendered, &urls);
                     rewrite_video_image_tags(&resolved)
@@ -792,8 +827,11 @@ pub fn App() -> impl IntoView {
                 notes=notes
                 active_note_id=active_note_id
                 sorted_uploads=Signal::derive(move || sorted_uploads.get())
+                sorted_whiteboards=Signal::derive(move || sorted_whiteboards.get())
+                whiteboard_name_index=Signal::derive(move || ink_name_index.get())
                 set_context_menu=set_context_menu
                 on_open_note=on_open_note
+                on_open_ink=on_open_ink
                 on_new_note=on_new_note
                 on_delete_upload=on_delete_upload
             />
@@ -838,10 +876,12 @@ pub fn App() -> impl IntoView {
                     set_title_before_edit=set_title_before_edit
                     backlinks=Signal::derive(move || backlinks.get())
                     active_note_uploads=Signal::derive(move || active_note_uploads.get())
+                    active_note_whiteboards=Signal::derive(move || active_note_whiteboards.get())
+                    whiteboard_name_index=Signal::derive(move || ink_name_index.get())
                     set_db_error=set_db_error
                     on_open_note=on_open_note
-                    on_open_or_create_note=on_open_or_create_note
                     on_open_ink=on_open_ink
+                    on_open_or_create_note=on_open_or_create_note
                     on_close_tab=on_close_tab
                     on_new_note=on_new_note
                     save_note=on_save_note

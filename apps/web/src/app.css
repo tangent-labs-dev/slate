@@ -507,6 +507,16 @@
     padding: 0.35rem 0.45rem;
     background: color-mix(in srgb, var(--bg-tab), transparent 20%);
 }
+.upload-main {
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+    flex: 1;
+    text-align: left;
+    cursor: pointer;
+}
 .upload-meta {
     min-width: 0;
     display: grid;
@@ -1022,6 +1032,7 @@
     border: 1px solid var(--line);
     border-radius: 10px;
     overflow: hidden;
+    position: relative;
     background: color-mix(in srgb, var(--bg-panel), transparent 8%);
     cursor: pointer;
 }
@@ -1031,6 +1042,22 @@
     height: auto;
     object-fit: contain;
     background: #111827;
+}
+.ink-embed-name {
+    position: absolute;
+    left: 0.55rem;
+    bottom: 0.55rem;
+    max-width: calc(100% - 1.1rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0.18rem 0.5rem;
+    border: 1px solid color-mix(in srgb, #334155, transparent 32%);
+    border-radius: 999px;
+    font-size: 0.74rem;
+    color: #e2e8f0;
+    background: rgba(2, 6, 23, 0.72);
+    backdrop-filter: blur(4px);
 }
 .ink-embed-empty {
     padding: 0.7rem 0.8rem;
@@ -1091,6 +1118,30 @@
     background: rgba(2, 6, 23, 0.82);
     backdrop-filter: blur(6px);
     pointer-events: auto;
+}
+.ink-name-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0 0.25rem;
+    color: #94a3b8;
+    font-size: 0.72rem;
+}
+.ink-name-input {
+    width: 210px;
+    max-width: 24vw;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid color-mix(in srgb, #475569, transparent 35%);
+    background: rgba(15, 23, 42, 0.9);
+    color: #e2e8f0;
+    padding: 0 0.55rem;
+    font-size: 0.78rem;
+}
+.ink-name-input:focus {
+    outline: none;
+    border-color: color-mix(in srgb, #a78bfa, transparent 30%);
+    box-shadow: 0 0 0 2px color-mix(in srgb, #7c3aed, transparent 70%);
 }
 .ink-left-panel {
     position: absolute;
