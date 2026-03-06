@@ -74,6 +74,7 @@ pub enum InkTool {
     Pen,
     Highlighter,
     Eraser,
+    Pinch,
     Line,
     Rectangle,
     Circle,

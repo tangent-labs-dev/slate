@@ -1,7 +1,8 @@
 use crate::app::bindings::{click_by_id, download_data_url, file_to_data_url, ui_prompt};
 use crate::models::{InkDocument, InkEmbed, InkEmbedKind, InkPoint, InkStroke, InkTool};
 use icondata::{
-    LuCircle, LuEraser, LuHighlighter, LuMinus, LuMousePointer2, LuPencil, LuRectangleHorizontal,
+    LuCircle, LuEraser, LuHand, LuHighlighter, LuMinus, LuMousePointer2, LuPencil,
+    LuRectangleHorizontal,
 };
 use leptos::ev::{KeyboardEvent, PointerEvent, WheelEvent};
 use leptos::html::Canvas;
@@ -256,7 +257,9 @@ pub fn InkCanvasModal(
             let _ = target.set_pointer_capture(ev.pointer_id());
         }
         let button = ev.button();
-        let pan_mode = button == 1 || (button == 0 && space_pressed.get_untracked());
+        let pan_mode = matches!(tool.get_untracked(), InkTool::Pinch)
+            || button == 1
+            || (button == 0 && space_pressed.get_untracked());
         if pan_mode {
             set_is_panning.set(true);
             set_last_pan_client.set(Some((ev.client_x() as f64, ev.client_y() as f64)));
@@ -283,6 +286,7 @@ pub fn InkCanvasModal(
         match tool.get_untracked() {
             InkTool::Pen | InkTool::Highlighter => set_draft_points.set(vec![point]),
             InkTool::Eraser => erase_at(point),
+            InkTool::Pinch => {}
             InkTool::Line | InkTool::Rectangle | InkTool::Circle => {
                 set_shape_start.set(Some(point));
                 set_shape_end.set(Some(point));
@@ -427,6 +431,7 @@ pub fn InkCanvasModal(
                 })
             }
             InkTool::Eraser => erase_at(point),
+            InkTool::Pinch => {}
             InkTool::Line | InkTool::Rectangle | InkTool::Circle => set_shape_end.set(Some(point)),
             InkTool::Select => {
                 if let Some(start) = selection_start.get_untracked() {
@@ -538,7 +543,7 @@ pub fn InkCanvasModal(
                 set_selection_start.set(None);
                 set_selection_rect.set(None);
             }
-            InkTool::Eraser => {}
+            InkTool::Eraser | InkTool::Pinch => {}
         }
     };
 
@@ -579,6 +584,7 @@ pub fn InkCanvasModal(
                 "p" => set_tool.set(InkTool::Pen),
                 "h" => set_tool.set(InkTool::Highlighter),
                 "e" => set_tool.set(InkTool::Eraser),
+                "m" => set_tool.set(InkTool::Pinch),
                 "l" => set_tool.set(InkTool::Line),
                 "r" => set_tool.set(InkTool::Rectangle),
                 "c" => set_tool.set(InkTool::Circle),
@@ -796,6 +802,9 @@ pub fn InkCanvasModal(
                     <div class="ink-tool-dock">
                         <button title="Select and move objects. Shortcut: V" class=move || if tool.get() == InkTool::Select { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Select)>
                             <Icon icon=LuMousePointer2 />
+                        </button>
+                        <button title="Pan board by dragging. Shortcut: M" class=move || if tool.get() == InkTool::Pinch { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Pinch)>
+                            <Icon icon=LuHand />
                         </button>
                         <button title="Freehand pen stroke. Shortcut: P" class=move || if tool.get() == InkTool::Pen { "mode-btn ink-tool-btn ink-tool-icon active" } else { "mode-btn ink-tool-btn ink-tool-icon" } on:click=move |_| set_tool.set(InkTool::Pen)>
                             <Icon icon=LuPencil />
@@ -1045,13 +1054,18 @@ pub fn InkCanvasModal(
                         width=canvas_width
                         height=canvas_height
                         style=move || {
-                            if matches!(tool.get(), InkTool::Select) {
-                                "pointer-events:none; z-index:4;".to_string()
-                            } else {
-                                "pointer-events:auto; z-index:4;".to_string()
+                            match tool.get() {
+                                InkTool::Select => "pointer-events:none; z-index:4;".to_string(),
+                                InkTool::Pinch => {
+                                    if is_panning.get() {
+                                        "pointer-events:auto; z-index:4; cursor:grabbing;".to_string()
+                                    } else {
+                                        "pointer-events:auto; z-index:4; cursor:grab;".to_string()
+                                    }
+                                }
+                                _ => "pointer-events:auto; z-index:4; cursor:crosshair;".to_string(),
                             }
                         }
-                        on:pointerleave=on_pointer_up
                         on:pointercancel=on_pointer_up
                         on:wheel=on_wheel
                     ></canvas>
@@ -1060,7 +1074,7 @@ pub fn InkCanvasModal(
                     <button class="mode-btn ink-bottom-btn" on:click=on_zoom_out>"-"</button>
                     <span class="ink-bottom-zoom">{move || format!("{:.0}%", zoom.get() * 100.0)}</span>
                     <button class="mode-btn ink-bottom-btn" on:click=on_zoom_in>"+"</button>
-                    <span class="ink-hint">"Mouse: Space+Drag pan, Wheel zoom | Keyboard: Tab/Shift+Tab move focus, Enter/Space activate, V/P/H/E/L/R/C tools"</span>
+                    <span class="ink-hint">"Mouse: Space+Drag or M tool pan, Wheel zoom | Keyboard: Tab/Shift+Tab move focus, Enter/Space activate, V/M/P/H/E/L/R/C tools"</span>
                 </div>
             </div>
         </div>
