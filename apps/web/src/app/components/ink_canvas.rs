@@ -87,7 +87,7 @@ pub fn InkCanvasModal(
         Some(InkPoint {
             x: wx,
             y: wy,
-            pressure: ev.pressure().max(0.1) as f64,
+            pressure: pointer_pressure(&ev),
         })
     };
     let client_to_screen = move |client_x: f64, client_y: f64| -> Option<(f64, f64, f64, f64)> {
@@ -418,7 +418,7 @@ pub fn InkCanvasModal(
         match tool.get_untracked() {
             InkTool::Pen | InkTool::Highlighter => {
                 let zoom_level = zoom.get_untracked().max(0.2);
-                let min_distance_sq = (0.9 / zoom_level).powi(2);
+                let min_distance_sq = (0.35 / zoom_level).powi(2);
                 set_draft_points.update(|points| {
                     let should_push = points.last().is_none_or(|last| {
                         let dx = point.x - last.x;
@@ -1232,22 +1232,14 @@ fn draw_stroke(
             }
             ctx.stroke();
         }
-        InkTool::Pen | InkTool::Highlighter => {
+        InkTool::Pen => {
             draw_pressure_sensitive_stroke(ctx, stroke, width, height, camera_x, camera_y, zoom);
         }
+        InkTool::Highlighter => {
+            draw_smooth_polyline(ctx, stroke, width, height, camera_x, camera_y, zoom);
+        }
         _ => {
-            ctx.set_line_width(stroke_base_width(stroke, zoom));
-            ctx.begin_path();
-            let first = stroke.points[0];
-            let (fx, fy) =
-                world_to_screen(first.x, first.y, width, height, camera_x, camera_y, zoom);
-            ctx.move_to(fx, fy);
-            for point in stroke.points.iter().skip(1) {
-                let (px, py) =
-                    world_to_screen(point.x, point.y, width, height, camera_x, camera_y, zoom);
-                ctx.line_to(px, py);
-            }
-            ctx.stroke();
+            draw_smooth_polyline(ctx, stroke, width, height, camera_x, camera_y, zoom);
         }
     }
     ctx.restore();
@@ -1257,19 +1249,104 @@ fn stroke_base_width(stroke: &InkStroke, zoom: f64) -> f64 {
     (stroke.width.max(1.0) * zoom).max(1.0)
 }
 
-fn normalized_pressure(point: InkPoint) -> f64 {
-    let pressure = point.pressure.clamp(0.0, 1.0);
-    if pressure < 0.2 { 0.55 } else { pressure }
+fn pointer_pressure(ev: &PointerEvent) -> f64 {
+    let raw = (ev.pressure() as f64).clamp(0.0, 1.0);
+    match ev.pointer_type().as_str() {
+        "pen" => raw.max(0.02),
+        "touch" => {
+            if raw > 0.0 {
+                raw
+            } else {
+                0.55
+            }
+        }
+        _ => 0.55,
+    }
+}
+
+fn draw_smooth_polyline(
+    ctx: &CanvasRenderingContext2d,
+    stroke: &InkStroke,
+    width: f64,
+    height: f64,
+    camera_x: f64,
+    camera_y: f64,
+    zoom: f64,
+) {
+    if stroke.points.is_empty() {
+        return;
+    }
+    if stroke.points.len() == 1 {
+        let p = stroke.points[0];
+        let (x, y) = world_to_screen(p.x, p.y, width, height, camera_x, camera_y, zoom);
+        let radius = stroke_base_width(stroke, zoom) * 0.5;
+        ctx.set_fill_style_str(&stroke.color);
+        ctx.begin_path();
+        ctx.arc(x, y, radius, 0.0, std::f64::consts::TAU).ok();
+        ctx.fill();
+        return;
+    }
+    let screen_points = stroke
+        .points
+        .iter()
+        .map(|p| world_to_screen(p.x, p.y, width, height, camera_x, camera_y, zoom))
+        .collect::<Vec<_>>();
+    ctx.set_line_width(stroke_base_width(stroke, zoom));
+    ctx.begin_path();
+    ctx.move_to(screen_points[0].0, screen_points[0].1);
+    if screen_points.len() == 2 {
+        let p = screen_points[1];
+        ctx.line_to(p.0, p.1);
+    } else {
+        for i in 1..screen_points.len() - 1 {
+            let current = screen_points[i];
+            let next = screen_points[i + 1];
+            let mid_x = (current.0 + next.0) * 0.5;
+            let mid_y = (current.1 + next.1) * 0.5;
+            ctx.quadratic_curve_to(current.0, current.1, mid_x, mid_y);
+        }
+        let last = screen_points[screen_points.len() - 1];
+        ctx.line_to(last.0, last.1);
+    }
+    ctx.stroke();
 }
 
 fn pressure_scaled_width(stroke: &InkStroke, pressure: f64, zoom: f64) -> f64 {
     let base = stroke_base_width(stroke, zoom);
-    let factor = if matches!(stroke.tool, InkTool::Highlighter) {
-        0.75 + pressure * 0.4
-    } else {
-        0.35 + pressure
-    };
-    (base * factor).max(0.8)
+    let normalized = pressure.clamp(0.0, 1.0);
+    (base * (0.22 + normalized * 1.45)).max(0.75)
+}
+
+fn infer_pressure_fallback(screen_points: &mut [(f64, f64, f64)]) {
+    if screen_points.is_empty() {
+        return;
+    }
+    let (min_pressure, max_pressure) = screen_points
+        .iter()
+        .fold((1.0f64, 0.0f64), |(min_p, max_p), p| {
+            (min_p.min(p.2), max_p.max(p.2))
+        });
+    if (max_pressure - min_pressure) >= 0.04 {
+        for p in screen_points.iter_mut() {
+            p.2 = p.2.clamp(0.05, 1.0);
+        }
+        return;
+    }
+
+    screen_points[0].2 = 0.72;
+    for i in 1..screen_points.len() {
+        let (prev_x, prev_y, prev_p) = screen_points[i - 1];
+        let (x, y, _) = screen_points[i];
+        let distance = ((x - prev_x).powi(2) + (y - prev_y).powi(2)).sqrt();
+        // When pressure data is flat/unavailable, infer a pen-like feel from stroke velocity.
+        let speed = (distance / 9.0).clamp(0.0, 1.0);
+        let inferred = 0.28 + (1.0 - speed) * 0.72;
+        screen_points[i].2 = (prev_p * 0.55 + inferred * 0.45).clamp(0.18, 1.0);
+    }
+}
+
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + (b - a) * t
 }
 
 fn draw_pressure_sensitive_stroke(
@@ -1281,29 +1358,43 @@ fn draw_pressure_sensitive_stroke(
     camera_y: f64,
     zoom: f64,
 ) {
-    let first = stroke.points[0];
-    let (mut prev_x, mut prev_y) =
-        world_to_screen(first.x, first.y, width, height, camera_x, camera_y, zoom);
-    let mut prev_pressure = normalized_pressure(first);
+    let mut screen_points = stroke
+        .points
+        .iter()
+        .map(|point| {
+            let (sx, sy) = world_to_screen(point.x, point.y, width, height, camera_x, camera_y, zoom);
+            (sx, sy, point.pressure.clamp(0.0, 1.0))
+        })
+        .collect::<Vec<_>>();
+    if screen_points.is_empty() {
+        return;
+    }
+    infer_pressure_fallback(&mut screen_points);
+    ctx.set_fill_style_str(&stroke.color);
 
-    if stroke.points.len() == 1 {
-        let radius = pressure_scaled_width(stroke, prev_pressure, zoom) * 0.5;
-        ctx.set_fill_style_str(&stroke.color);
+    if screen_points.len() == 1 {
+        let (x, y, pressure) = screen_points[0];
+        let radius = pressure_scaled_width(stroke, pressure, zoom) * 0.5;
         ctx.begin_path();
-        ctx.arc(prev_x, prev_y, radius, 0.0, std::f64::consts::TAU).ok();
+        ctx.arc(x, y, radius, 0.0, std::f64::consts::TAU).ok();
         ctx.fill();
         return;
     }
 
-    for point in stroke.points.iter().copied().skip(1) {
-        let (x, y) = world_to_screen(point.x, point.y, width, height, camera_x, camera_y, zoom);
-        let pressure = normalized_pressure(point);
-        let segment_pressure = (prev_pressure + pressure) * 0.5;
-        ctx.set_line_width(pressure_scaled_width(stroke, segment_pressure, zoom));
-        ctx.begin_path();
-        ctx.move_to(prev_x, prev_y);
-        ctx.line_to(x, y);
-        ctx.stroke();
+    let (mut prev_x, mut prev_y, mut prev_pressure) = screen_points[0];
+    for (x, y, pressure) in screen_points.into_iter().skip(1) {
+        let distance = ((x - prev_x).powi(2) + (y - prev_y).powi(2)).sqrt();
+        let steps = ((distance / 1.0).ceil() as usize).clamp(1, 256);
+        for step in 0..=steps {
+            let t = step as f64 / steps as f64;
+            let px = lerp(prev_x, x, t);
+            let py = lerp(prev_y, y, t);
+            let p = lerp(prev_pressure, pressure, t);
+            let radius = pressure_scaled_width(stroke, p, zoom) * 0.5;
+            ctx.begin_path();
+            ctx.arc(px, py, radius, 0.0, std::f64::consts::TAU).ok();
+            ctx.fill();
+        }
         prev_x = x;
         prev_y = y;
         prev_pressure = pressure;
