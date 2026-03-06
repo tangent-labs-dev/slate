@@ -8,7 +8,7 @@ use leptos::html::Canvas;
 use leptos::prelude::*;
 use leptos::web_sys::HtmlInputElement;
 use leptos_icons::Icon;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
@@ -55,6 +55,12 @@ pub fn InkCanvasModal(
     let (resizing_embed_id, set_resizing_embed_id) = signal::<Option<String>>(None);
     let (resizing_start_point, set_resizing_start_point) = signal((0.0f64, 0.0f64));
     let (resizing_start_size, set_resizing_start_size) = signal((0.0f64, 0.0f64));
+    let (panel_open, set_panel_open) = signal(false);
+    let (touch_points, set_touch_points) = signal::<HashMap<i32, (f64, f64)>>(HashMap::new());
+    let (pinch_start_distance, set_pinch_start_distance) = signal(0.0f64);
+    let (pinch_start_zoom, set_pinch_start_zoom) = signal(1.0f64);
+    let (pinch_anchor_world, set_pinch_anchor_world) = signal((0.0f64, 0.0f64));
+    let (is_pinching, set_is_pinching) = signal(false);
 
     let canvas_ref = NodeRef::<Canvas>::new();
     let canvas_width = initial_document.width.max(1600.0) as u32;
@@ -82,6 +88,18 @@ pub fn InkCanvasModal(
             y: wy,
             pressure: ev.pressure().max(0.1) as f64,
         })
+    };
+    let client_to_screen = move |client_x: f64, client_y: f64| -> Option<(f64, f64, f64, f64)> {
+        let canvas = canvas_ref.get()?;
+        let rect = canvas.get_bounding_client_rect();
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
+        }
+        let width = canvas.width() as f64;
+        let height = canvas.height() as f64;
+        let sx = (client_x - rect.left()) * width / rect.width();
+        let sy = (client_y - rect.top()) * height / rect.height();
+        Some((sx, sy, width, height))
     };
 
     let redraw = move || {
@@ -121,9 +139,10 @@ pub fn InkCanvasModal(
 
     let erase_at = move |point: InkPoint| {
         let mut changed = false;
+        let zoom_level = zoom.get_untracked();
         set_strokes.update(|all| {
             let before = all.len();
-            all.retain(|stroke| !stroke_hit_test(stroke, point));
+            all.retain(|stroke| !stroke_hit_test(stroke, point, zoom_level));
             changed = before != all.len();
         });
         if changed {
@@ -189,6 +208,53 @@ pub fn InkCanvasModal(
     let on_pointer_down = move |ev: PointerEvent| {
         ev.prevent_default();
         ev.stop_propagation();
+        if ev.pointer_type() == "touch" {
+            set_touch_points.update(|points| {
+                points.insert(ev.pointer_id(), (ev.client_x() as f64, ev.client_y() as f64));
+            });
+            let active = touch_points.get_untracked();
+            if active.len() >= 2 {
+                let mut iter = active.values();
+                if let (Some(a), Some(b)) = (iter.next(), iter.next()) {
+                    let dx = b.0 - a.0;
+                    let dy = b.1 - a.1;
+                    let distance = (dx * dx + dy * dy).sqrt().max(1.0);
+                    let mid_x = (a.0 + b.0) * 0.5;
+                    let mid_y = (a.1 + b.1) * 0.5;
+                    if let Some((sx, sy, width, height)) = client_to_screen(mid_x, mid_y) {
+                        let current_zoom = zoom.get_untracked();
+                        let (anchor_x, anchor_y) = screen_to_world(
+                            sx,
+                            sy,
+                            width,
+                            height,
+                            camera_x.get_untracked(),
+                            camera_y.get_untracked(),
+                            current_zoom,
+                        );
+                        set_pinch_anchor_world.set((anchor_x, anchor_y));
+                        set_pinch_start_distance.set(distance);
+                        set_pinch_start_zoom.set(current_zoom);
+                        set_is_pinching.set(true);
+                        set_is_drawing.set(false);
+                        set_draft_points.set(Vec::new());
+                        set_shape_start.set(None);
+                        set_shape_end.set(None);
+                        set_selection_start.set(None);
+                        set_selection_rect.set(None);
+                        set_dragging_selected_strokes.set(false);
+                        set_dragging_strokes_last_point.set(None);
+                        return;
+                    }
+                }
+            }
+        }
+        if let Some(target) = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+        {
+            let _ = target.set_pointer_capture(ev.pointer_id());
+        }
         let button = ev.button();
         let pan_mode = button == 1 || (button == 0 && space_pressed.get_untracked());
         if pan_mode {
@@ -202,7 +268,9 @@ pub fn InkCanvasModal(
         };
         set_selected_embed_id.set(None);
         if matches!(tool.get_untracked(), InkTool::Select) {
-            if let Some(hit_id) = pick_stroke_at_point(&strokes.get_untracked(), point) {
+            if let Some(hit_id) =
+                pick_stroke_at_point(&strokes.get_untracked(), point, zoom.get_untracked())
+            {
                 set_selected_ids.set(std::iter::once(hit_id).collect());
                 set_dragging_selected_strokes.set(true);
                 set_dragging_strokes_last_point.set(Some(point));
@@ -227,6 +295,47 @@ pub fn InkCanvasModal(
     };
 
     let on_pointer_move = move |ev: PointerEvent| {
+        if ev.pointer_type() == "touch" {
+            set_touch_points.update(|points| {
+                if points.contains_key(&ev.pointer_id()) {
+                    points.insert(ev.pointer_id(), (ev.client_x() as f64, ev.client_y() as f64));
+                }
+            });
+            let active = touch_points.get_untracked();
+            if is_pinching.get_untracked() || active.len() >= 2 {
+                ev.prevent_default();
+                if active.len() >= 2 {
+                    let mut iter = active.values();
+                    if let (Some(a), Some(b)) = (iter.next(), iter.next()) {
+                        let dx = b.0 - a.0;
+                        let dy = b.1 - a.1;
+                        let distance = (dx * dx + dy * dy).sqrt().max(1.0);
+                        let mid_x = (a.0 + b.0) * 0.5;
+                        let mid_y = (a.1 + b.1) * 0.5;
+                        if let Some((sx, sy, width, height)) = client_to_screen(mid_x, mid_y) {
+                            let start_distance = pinch_start_distance.get_untracked().max(1.0);
+                            let start_zoom = pinch_start_zoom.get_untracked();
+                            let next_zoom =
+                                (start_zoom * (distance / start_distance)).clamp(MIN_ZOOM, MAX_ZOOM);
+                            let (anchor_x, anchor_y) = pinch_anchor_world.get_untracked();
+                            set_zoom.set(next_zoom);
+                            set_camera_x.set(anchor_x - (sx - width * 0.5) / next_zoom);
+                            set_camera_y.set(anchor_y - (sy - height * 0.5) / next_zoom);
+                            set_is_pinching.set(true);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        if resizing_embed_id.get_untracked().is_some()
+            || dragging_embed_id.get_untracked().is_some()
+            || dragging_selected_strokes.get_untracked()
+            || is_panning.get_untracked()
+            || is_drawing.get_untracked()
+        {
+            ev.prevent_default();
+        }
         if let Some(embed_id) = resizing_embed_id.get_untracked() {
             let Some(point) = to_world_point(ev) else {
                 return;
@@ -304,7 +413,18 @@ pub fn InkCanvasModal(
         };
         match tool.get_untracked() {
             InkTool::Pen | InkTool::Highlighter => {
-                set_draft_points.update(|points| points.push(point))
+                let zoom_level = zoom.get_untracked().max(0.2);
+                let min_distance_sq = (0.9 / zoom_level).powi(2);
+                set_draft_points.update(|points| {
+                    let should_push = points.last().is_none_or(|last| {
+                        let dx = point.x - last.x;
+                        let dy = point.y - last.y;
+                        (dx * dx + dy * dy) >= min_distance_sq
+                    });
+                    if should_push {
+                        points.push(point);
+                    }
+                })
             }
             InkTool::Eraser => erase_at(point),
             InkTool::Line | InkTool::Rectangle | InkTool::Circle => set_shape_end.set(Some(point)),
@@ -316,7 +436,26 @@ pub fn InkCanvasModal(
         }
     };
 
-    let on_pointer_up = move |_| {
+    let on_pointer_up = move |ev: PointerEvent| {
+        if ev.pointer_type() == "touch" {
+            let was_pinching = is_pinching.get_untracked();
+            set_touch_points.update(|points| {
+                points.remove(&ev.pointer_id());
+            });
+            if touch_points.get_untracked().len() < 2 {
+                set_is_pinching.set(false);
+                set_pinch_start_distance.set(0.0);
+            }
+            if was_pinching {
+                return;
+            }
+        }
+        if let Some(target) = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+        {
+            let _ = target.release_pointer_capture(ev.pointer_id());
+        }
         if resizing_embed_id.get_untracked().is_some() {
             set_resizing_embed_id.set(None);
             return;
@@ -698,7 +837,13 @@ pub fn InkCanvasModal(
                     </div>
                 </div>
 
-                <div class="ink-left-panel">
+                <div class=move || {
+                    if panel_open.get() {
+                        "ink-left-panel open".to_string()
+                    } else {
+                        "ink-left-panel".to_string()
+                    }
+                }>
                     <div class="ink-panel-title">"Stroke"</div>
                     <label class="ink-slider-label">
                         "Background"
@@ -773,6 +918,13 @@ pub fn InkCanvasModal(
                     <button class="mode-btn ink-side-btn" on:click=on_clear>"Clear Board"</button>
                     <button class="mode-btn ink-side-btn" on:click=on_reset_view>"Reset View"</button>
                 </div>
+                <button
+                    class="mode-btn ink-panel-toggle"
+                    on:click=move |_| set_panel_open.update(|open| *open = !*open)
+                    aria-label="Toggle whiteboard controls"
+                >
+                    {move || if panel_open.get() { "Hide controls" } else { "Controls" }}
+                </button>
 
                 <div
                     class="ink-canvas-wrap"
@@ -780,6 +932,7 @@ pub fn InkCanvasModal(
                     on:pointerdown=on_pointer_down
                     on:pointermove=on_pointer_move
                     on:pointerup=on_pointer_up
+                    on:pointercancel=on_pointer_up
                 >
                     <input
                         id=INK_IMAGE_UPLOAD_INPUT_ID
@@ -826,6 +979,7 @@ pub fn InkCanvasModal(
                                     on:pointerdown=move |ev| on_embed_pointer_down(ev, id_drag.clone())
                                     on:pointermove=on_pointer_move
                                     on:pointerup=on_pointer_up
+                                    on:pointercancel=on_pointer_up
                                 >
                                     <button
                                         class="ink-embed-remove"
@@ -841,6 +995,7 @@ pub fn InkCanvasModal(
                                         on:pointerdown=move |ev| on_embed_resize_pointer_down(ev, id_resize.clone())
                                         on:pointermove=on_pointer_move
                                         on:pointerup=on_pointer_up
+                                        on:pointercancel=on_pointer_up
                                     ></div>
                                     <img
                                         class="ink-embed-media"
@@ -897,6 +1052,7 @@ pub fn InkCanvasModal(
                             }
                         }
                         on:pointerleave=on_pointer_up
+                        on:pointercancel=on_pointer_up
                         on:wheel=on_wheel
                     ></canvas>
                 </div>
@@ -1227,8 +1383,8 @@ fn stroke_bounds(stroke: &InkStroke) -> (f64, f64, f64, f64) {
     }
 }
 
-fn stroke_hit_test(stroke: &InkStroke, point: InkPoint) -> bool {
-    let radius = (stroke.width + 12.0).max(10.0);
+fn stroke_hit_test(stroke: &InkStroke, point: InkPoint, zoom: f64) -> bool {
+    let radius = (18.0 / zoom.max(0.25)).max(stroke.width * 0.65 + 6.0);
     let radius_sq = radius * radius;
     stroke.points.iter().any(|p| {
         let dx = p.x - point.x;
@@ -1241,13 +1397,13 @@ fn next_stroke_z(strokes: &[InkStroke]) -> i32 {
     strokes.iter().map(|stroke| stroke.z_index).max().unwrap_or(0) + 1
 }
 
-fn pick_stroke_at_point(strokes: &[InkStroke], point: InkPoint) -> Option<String> {
+fn pick_stroke_at_point(strokes: &[InkStroke], point: InkPoint, zoom: f64) -> Option<String> {
     let mut ordered = strokes.to_vec();
     ordered.sort_by_key(|stroke| stroke.z_index);
     ordered
         .into_iter()
         .rev()
-        .find(|stroke| stroke_hit_test(stroke, point))
+        .find(|stroke| stroke_hit_test(stroke, point, zoom))
         .map(|stroke| stroke.id)
 }
 

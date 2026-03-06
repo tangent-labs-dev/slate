@@ -1240,6 +1240,16 @@
     backdrop-filter: blur(6px);
     pointer-events: auto;
 }
+.ink-panel-toggle {
+    position: absolute;
+    left: 12px;
+    bottom: 58px;
+    z-index: 35;
+    display: none;
+    color: #cbd5e1;
+    border-color: color-mix(in srgb, #475569, transparent 35%);
+    background: rgba(15, 23, 42, 0.88);
+}
 .ink-bottom-zoom {
     min-width: 3.1rem;
     text-align: center;
@@ -1298,6 +1308,9 @@
     background: #0b1020;
     position: relative;
     z-index: 1;
+    touch-action: none;
+    overscroll-behavior: contain;
+    user-select: none;
 }
 .ink-canvas {
     width: 100%;
@@ -1319,6 +1332,7 @@
     z-index: 2;
     user-select: none;
     cursor: grab;
+    touch-action: none;
 }
 .ink-embed-node:active {
     cursor: grabbing;
@@ -1409,4 +1423,106 @@
     padding: 0.2rem 0.4rem;
     border: 1px solid color-mix(in srgb, #475569, transparent 35%);
     border-radius: 6px;
+}
+
+@media (max-width: 1024px) {
+    .ink-modal-backdrop {
+        place-items: stretch;
+        padding: 0;
+    }
+    .ink-modal {
+        width: 100vw;
+        height: 100dvh;
+        border-radius: 0;
+        border: none;
+    }
+    .ink-ui-top {
+        top: 8px;
+        left: 8px;
+        right: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+    }
+    .ink-tool-dock,
+    .ink-actions-dock {
+        position: static;
+        transform: none;
+        margin: 0;
+        max-width: 100%;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+    .ink-tool-dock::-webkit-scrollbar,
+    .ink-actions-dock::-webkit-scrollbar {
+        display: none;
+    }
+    .ink-name-input {
+        width: 140px;
+        max-width: 34vw;
+    }
+    .ink-left-panel {
+        left: 8px;
+        top: auto;
+        bottom: 108px;
+        width: min(280px, calc(100% - 16px));
+        max-height: min(64vh, 460px);
+        overflow: auto;
+        opacity: 0;
+        transform: translateY(calc(100% + 12px));
+        pointer-events: none;
+        transition: transform 0.18s ease, opacity 0.18s ease;
+    }
+    .ink-left-panel.open {
+        opacity: 1;
+        transform: translateY(0);
+        pointer-events: auto;
+    }
+    .ink-panel-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 34px;
+        padding: 0.35rem 0.6rem;
+    }
+    .ink-bottom-bar {
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        width: auto;
+        max-width: calc(100% - 16px);
+    }
+    .ink-hint {
+        display: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .ink-tool-icon {
+        width: 32px;
+        height: 32px;
+        min-width: 32px;
+    }
+    .ink-actions-dock {
+        gap: 0.25rem;
+    }
+    .ink-name-field > span,
+    .ink-name-input,
+    .ink-action-btn[title*="Undo"],
+    .ink-action-btn[title*="Redo"],
+    .ink-action-btn:not(.active):not([title*="Close"]) {
+        display: none;
+    }
+    .ink-zoom-badge {
+        display: none;
+    }
+    .ink-left-panel {
+        bottom: 100px;
+        width: calc(100% - 16px);
+        max-height: 58vh;
+    }
+    .ink-bottom-bar {
+        gap: 0.26rem;
+        padding: 0.28rem 0.34rem;
+    }
 }
