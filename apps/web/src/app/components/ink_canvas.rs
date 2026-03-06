@@ -66,6 +66,12 @@ pub fn InkCanvasModal(
     let canvas_ref = NodeRef::<Canvas>::new();
     let canvas_width = initial_document.width.max(1600.0) as u32;
     let canvas_height = initial_document.height.max(900.0) as u32;
+    let pixel_ratio = window()
+        .map(|w| w.device_pixel_ratio())
+        .unwrap_or(1.0)
+        .clamp(1.0, 3.0);
+    let backing_canvas_width = (canvas_width as f64 * pixel_ratio).round() as u32;
+    let backing_canvas_height = (canvas_height as f64 * pixel_ratio).round() as u32;
 
     let to_world_point = move |ev: PointerEvent| -> Option<InkPoint> {
         let canvas = canvas_ref.get()?;
@@ -73,13 +79,15 @@ pub fn InkCanvasModal(
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return None;
         }
-        let sx = (ev.client_x() as f64 - rect.left()) * canvas.width() as f64 / rect.width();
-        let sy = (ev.client_y() as f64 - rect.top()) * canvas.height() as f64 / rect.height();
+        let logical_width = canvas.width() as f64 / pixel_ratio;
+        let logical_height = canvas.height() as f64 / pixel_ratio;
+        let sx = (ev.client_x() as f64 - rect.left()) * logical_width / rect.width();
+        let sy = (ev.client_y() as f64 - rect.top()) * logical_height / rect.height();
         let (wx, wy) = screen_to_world(
             sx,
             sy,
-            canvas.width() as f64,
-            canvas.height() as f64,
+            logical_width,
+            logical_height,
             camera_x.get_untracked(),
             camera_y.get_untracked(),
             zoom.get_untracked(),
@@ -96,8 +104,8 @@ pub fn InkCanvasModal(
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return None;
         }
-        let width = canvas.width() as f64;
-        let height = canvas.height() as f64;
+        let width = canvas.width() as f64 / pixel_ratio;
+        let height = canvas.height() as f64 / pixel_ratio;
         let sx = (client_x - rect.left()) * width / rect.width();
         let sy = (client_y - rect.top()) * height / rect.height();
         Some((sx, sy, width, height))
@@ -120,6 +128,7 @@ pub fn InkCanvasModal(
             camera_x.get(),
             camera_y.get(),
             zoom.get(),
+            pixel_ratio,
         );
     };
 
@@ -553,23 +562,25 @@ pub fn InkCanvasModal(
             return;
         };
         let rect = canvas.get_bounding_client_rect();
-        let sx = (ev.client_x() as f64 - rect.left()) * canvas.width() as f64 / rect.width();
-        let sy = (ev.client_y() as f64 - rect.top()) * canvas.height() as f64 / rect.height();
+        let logical_width = canvas.width() as f64 / pixel_ratio;
+        let logical_height = canvas.height() as f64 / pixel_ratio;
+        let sx = (ev.client_x() as f64 - rect.left()) * logical_width / rect.width();
+        let sy = (ev.client_y() as f64 - rect.top()) * logical_height / rect.height();
         let old_zoom = zoom.get_untracked();
         let step = if ev.delta_y() < 0.0 { 1.12 } else { 0.89 };
         let new_zoom = (old_zoom * step).clamp(MIN_ZOOM, MAX_ZOOM);
         let (before_x, before_y) = screen_to_world(
             sx,
             sy,
-            canvas.width() as f64,
-            canvas.height() as f64,
+            logical_width,
+            logical_height,
             camera_x.get_untracked(),
             camera_y.get_untracked(),
             old_zoom,
         );
         set_zoom.set(new_zoom);
-        let cam_x = before_x - (sx - canvas.width() as f64 * 0.5) / new_zoom;
-        let cam_y = before_y - (sy - canvas.height() as f64 * 0.5) / new_zoom;
+        let cam_x = before_x - (sx - logical_width * 0.5) / new_zoom;
+        let cam_y = before_y - (sy - logical_height * 0.5) / new_zoom;
         set_camera_x.set(cam_x);
         set_camera_y.set(cam_y);
     };
@@ -1051,8 +1062,8 @@ pub fn InkCanvasModal(
                     <canvas
                         node_ref=canvas_ref
                         class="ink-canvas"
-                        width=canvas_width
-                        height=canvas_height
+                        width=backing_canvas_width
+                        height=backing_canvas_height
                         style=move || {
                             match tool.get() {
                                 InkTool::Select => "pointer-events:none; z-index:4;".to_string(),
@@ -1094,13 +1105,19 @@ fn draw_scene(
     camera_x: f64,
     camera_y: f64,
     zoom: f64,
+    pixel_ratio: f64,
 ) {
     let Some(ctx) = canvas_context(canvas) else {
         return;
     };
-    let width = canvas.width() as f64;
-    let height = canvas.height() as f64;
-    ctx.clear_rect(0.0, 0.0, width, height);
+    let backing_width = canvas.width() as f64;
+    let backing_height = canvas.height() as f64;
+    let width = backing_width / pixel_ratio;
+    let height = backing_height / pixel_ratio;
+    ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0).ok();
+    ctx.clear_rect(0.0, 0.0, backing_width, backing_height);
+    ctx.set_transform(pixel_ratio, 0.0, 0.0, pixel_ratio, 0.0, 0.0)
+        .ok();
     draw_grid(&ctx, width, height, camera_x, camera_y, zoom);
 
     let mut ordered_strokes = strokes.to_vec();
@@ -1314,7 +1331,7 @@ fn draw_smooth_polyline(
 fn pressure_scaled_width(stroke: &InkStroke, pressure: f64, zoom: f64) -> f64 {
     let base = stroke_base_width(stroke, zoom);
     let normalized = pressure.clamp(0.0, 1.0);
-    (base * (0.22 + normalized * 1.45)).max(0.75)
+    (base * (0.55 + normalized * 0.9)).max(0.9)
 }
 
 fn infer_pressure_fallback(screen_points: &mut [(f64, f64, f64)]) {
@@ -1332,16 +1349,8 @@ fn infer_pressure_fallback(screen_points: &mut [(f64, f64, f64)]) {
         }
         return;
     }
-
-    screen_points[0].2 = 0.72;
-    for i in 1..screen_points.len() {
-        let (prev_x, prev_y, prev_p) = screen_points[i - 1];
-        let (x, y, _) = screen_points[i];
-        let distance = ((x - prev_x).powi(2) + (y - prev_y).powi(2)).sqrt();
-        // When pressure data is flat/unavailable, infer a pen-like feel from stroke velocity.
-        let speed = (distance / 9.0).clamp(0.0, 1.0);
-        let inferred = 0.28 + (1.0 - speed) * 0.72;
-        screen_points[i].2 = (prev_p * 0.55 + inferred * 0.45).clamp(0.18, 1.0);
+    for p in screen_points.iter_mut() {
+        p.2 = 0.72;
     }
 }
 
@@ -1384,7 +1393,7 @@ fn draw_pressure_sensitive_stroke(
     let (mut prev_x, mut prev_y, mut prev_pressure) = screen_points[0];
     for (x, y, pressure) in screen_points.into_iter().skip(1) {
         let distance = ((x - prev_x).powi(2) + (y - prev_y).powi(2)).sqrt();
-        let steps = ((distance / 1.0).ceil() as usize).clamp(1, 256);
+        let steps = ((distance / 0.45).ceil() as usize).clamp(1, 512);
         for step in 0..=steps {
             let t = step as f64 / steps as f64;
             let px = lerp(prev_x, x, t);
