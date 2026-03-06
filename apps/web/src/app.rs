@@ -9,20 +9,21 @@ use self::bindings::{
     auto_resize_editors, click_by_id, highlight_markdown_code, init_sidebar_resizer,
     media_create_object_url, media_revoke_object_url, ui_pref_get, ui_pref_set, ui_prompt,
 };
-use self::components::{EditorPane, Sidebar, Toolbar};
+use self::components::{EditorPane, InkCanvasModal, Sidebar, Toolbar};
 use self::constants::{
     APP_STYLES, IMAGE_UPLOAD_INPUT_ID, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, VIDEO_UPLOAD_INPUT_ID,
     WELCOME_NOTE_CONTENT,
 };
 use self::helpers::{
     AppTheme, image_markdown, mode_from_pref, mode_to_pref, normalized_storage_path,
-    strip_media_ref_lines, video_embed_markdown,
+    strip_ink_ref_blocks, strip_media_ref_lines, video_embed_markdown,
 };
 use crate::links::normalize_title;
 use crate::markdown::{
-    collect_slate_media_ids, render_markdown, resolve_slate_media_urls, rewrite_video_image_tags,
+    collect_slate_ink_ids, collect_slate_media_ids, render_markdown, resolve_slate_media_urls,
+    rewrite_ink_blocks_to_html, rewrite_video_image_tags,
 };
-use crate::models::{EditorMode, MediaAsset, Note};
+use crate::models::{EditorMode, InkDocument, MediaAsset, Note};
 use crate::note_graph::{backlink_ids_for, build_title_index};
 use crate::store::{
     delete_media_assets_by_ids, load_all_media_assets, load_all_notes, upsert_media_asset,
@@ -31,7 +32,13 @@ use crate::store::{
 use js_sys::{Date, Uint8Array};
 use leptos::prelude::*;
 use leptos::web_sys::HtmlInputElement;
+use serde_json::{from_slice, to_vec};
 use wasm_bindgen_futures::spawn_local;
+
+#[derive(Clone, Debug, PartialEq)]
+struct InkEditorSession {
+    asset_id: String,
+}
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -52,6 +59,7 @@ pub fn App() -> impl IntoView {
     let (media_assets, set_media_assets) = signal::<Vec<MediaAsset>>(vec![]);
     let (media_url_index, set_media_url_index) =
         signal::<std::collections::HashMap<String, String>>(std::collections::HashMap::new());
+    let (ink_editor_session, set_ink_editor_session) = signal::<Option<InkEditorSession>>(None);
 
     let sorted_notes = Memo::new(move |_| {
         let mut n = notes.get();
@@ -96,9 +104,36 @@ pub fn App() -> impl IntoView {
     });
 
     let sorted_uploads = Memo::new(move |_| {
-        let mut uploads = media_assets.get();
+        let mut uploads = media_assets
+            .get()
+            .into_iter()
+            .filter(|asset| asset.mime_type != "application/vnd.slate.ink+json")
+            .collect::<Vec<_>>();
         uploads.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         uploads
+    });
+
+    let sorted_whiteboards = Memo::new(move |_| {
+        let mut boards = media_assets
+            .get()
+            .into_iter()
+            .filter(|asset| asset.mime_type == "application/vnd.slate.ink+json")
+            .collect::<Vec<_>>();
+        boards.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
+        boards
+    });
+
+    let active_note_whiteboards = Memo::new(move |_| {
+        if let Some(note) = active_note.get() {
+            let ink_ids = collect_slate_ink_ids(&note.content);
+            sorted_whiteboards
+                .get()
+                .into_iter()
+                .filter(|asset| ink_ids.iter().any(|id| id == &asset.id))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
     });
 
     let active_note_uploads = Memo::new(move |_| {
@@ -120,14 +155,47 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    let ink_documents = Memo::new(move |_| {
+        media_assets
+            .get()
+            .into_iter()
+            .filter(|asset| asset.mime_type == "application/vnd.slate.ink+json")
+            .filter_map(|asset| {
+                from_slice::<InkDocument>(&asset.data)
+                    .ok()
+                    .map(|doc| (asset.id, doc))
+            })
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+
+    let ink_thumbnail_index = Memo::new(move |_| {
+        ink_documents
+            .get()
+            .into_iter()
+            .filter_map(|(id, doc)| {
+                doc.thumbnail_data_url.map(|preview| (id, preview))
+            })
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    let ink_name_index = Memo::new(move |_| {
+        ink_documents
+            .get()
+            .into_iter()
+            .map(|(id, doc)| (id, doc.name))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+
     let preview_html = Memo::new(move |_| {
         if matches!(mode.get(), EditorMode::Preview | EditorMode::Split) {
             let title_map = title_index.get();
             let urls = media_url_index.get();
+            let thumbnails = ink_thumbnail_index.get();
+            let ink_names = ink_name_index.get();
             active_note
                 .get()
                 .map(|n| {
-                    let rendered = render_markdown(&n.content, &title_map);
+                    let with_ink = rewrite_ink_blocks_to_html(&n.content, &thumbnails, &ink_names);
+                    let rendered = render_markdown(&with_ink, &title_map);
                     let resolved = resolve_slate_media_urls(&rendered, &urls);
                     rewrite_video_image_tags(&resolved)
                 })
@@ -293,10 +361,16 @@ pub fn App() -> impl IntoView {
 
     let cleanup_orphaned_media = move || {
         let all_notes = notes.get_untracked();
-        let referenced_ids = all_notes
+        let mut referenced_ids = all_notes
             .iter()
             .flat_map(|note| collect_slate_media_ids(&note.content))
             .collect::<std::collections::HashSet<_>>();
+        for ink_id in all_notes
+            .iter()
+            .flat_map(|note| collect_slate_ink_ids(&note.content))
+        {
+            referenced_ids.insert(ink_id);
+        }
 
         let orphan_ids = media_assets
             .get_untracked()
@@ -360,8 +434,9 @@ pub fn App() -> impl IntoView {
         let mut changed_notes = Vec::<Note>::new();
         set_notes.update(|all| {
             for note in all.iter_mut() {
-                let next_content =
+                let stripped_media =
                     strip_media_ref_lines(&note.content, &key_with_path, &key_legacy);
+                let next_content = strip_ink_ref_blocks(&stripped_media, &asset_id);
                 if next_content != note.content {
                     note.content = next_content;
                     note.updated_at = now;
@@ -461,6 +536,89 @@ pub fn App() -> impl IntoView {
             auto_resize_editors();
             save_note(note_id);
         }
+    };
+
+    let insert_ink_block = move || {
+        let Some(note_id) = active_note_id.get_untracked() else {
+            set_db_error.set(Some(
+                "Open a note before inserting a whiteboard.".to_string(),
+            ));
+            return;
+        };
+        let doc = InkDocument::blank(1400.0, 900.0);
+        let payload = match to_vec(&doc) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                set_db_error.set(Some(format!("Failed to serialize whiteboard document: {e}")));
+                return;
+            }
+        };
+        let asset = MediaAsset::new(
+            note_id,
+            "whiteboard.json",
+            "application/vnd.slate.ink+json",
+            payload,
+        );
+        let asset_id = asset.id.clone();
+        set_media_assets.update(|all| all.push(asset.clone()));
+        append_media_snippet(format!(":::whiteboard {{\"id\":\"{}\"}} :::", asset_id));
+        set_ink_editor_session.set(Some(InkEditorSession {
+            asset_id: asset_id.clone(),
+        }));
+        spawn_local({
+            let set_db_error = set_db_error.clone();
+            async move {
+                if let Err(e) = upsert_media_asset(&asset).await {
+                    set_db_error.set(Some(format!("{e:?}")));
+                }
+            }
+        });
+    };
+
+    let open_ink_editor = move |asset_id: String| {
+        let exists = media_assets
+            .get_untracked()
+            .into_iter()
+            .any(|asset| asset.id == asset_id);
+        if !exists {
+            set_db_error.set(Some("Whiteboard asset not found.".to_string()));
+            return;
+        }
+        set_ink_editor_session.set(Some(InkEditorSession { asset_id }));
+    };
+
+    let save_ink_document = move |asset_id: String, document: InkDocument| {
+        let payload = match to_vec(&document) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                set_db_error.set(Some(format!("Failed to save whiteboard document: {e}")));
+                return;
+            }
+        };
+
+        let mut maybe_asset = None::<MediaAsset>;
+        set_media_assets.update(|all| {
+            if let Some(asset) = all.iter_mut().find(|asset| asset.id == asset_id) {
+                asset.data = payload.clone();
+                asset.size_bytes = asset.data.len() as u64;
+                maybe_asset = Some(asset.clone());
+            }
+        });
+
+        let Some(asset) = maybe_asset else {
+            set_db_error.set(Some(
+                "Whiteboard asset disappeared before save.".to_string(),
+            ));
+            return;
+        };
+        spawn_local({
+            let set_db_error = set_db_error.clone();
+            async move {
+                if let Err(e) = upsert_media_asset(&asset).await {
+                    set_db_error.set(Some(format!("{e:?}")));
+                }
+            }
+        });
     };
 
     let insert_image_by_url = move || {
@@ -641,11 +799,17 @@ pub fn App() -> impl IntoView {
     let on_insert_video_url = Callback::new(move |_| {
         insert_video_by_url();
     });
+    let on_insert_ink = Callback::new(move |_| {
+        insert_ink_block();
+    });
     let on_click_upload_image = Callback::new(move |_| {
         click_by_id(IMAGE_UPLOAD_INPUT_ID);
     });
     let on_click_upload_video = Callback::new(move |_| {
         click_by_id(VIDEO_UPLOAD_INPUT_ID);
+    });
+    let on_open_ink = Callback::new(move |id: String| {
+        open_ink_editor(id);
     });
 
     view! {
@@ -667,8 +831,11 @@ pub fn App() -> impl IntoView {
                 notes=notes
                 active_note_id=active_note_id
                 sorted_uploads=Signal::derive(move || sorted_uploads.get())
+                sorted_whiteboards=Signal::derive(move || sorted_whiteboards.get())
+                whiteboard_name_index=Signal::derive(move || ink_name_index.get())
                 set_context_menu=set_context_menu
                 on_open_note=on_open_note
+                on_open_ink=on_open_ink
                 on_new_note=on_new_note
                 on_delete_upload=on_delete_upload
             />
@@ -683,6 +850,7 @@ pub fn App() -> impl IntoView {
                     set_theme=set_theme
                     on_insert_image_url=on_insert_image_url
                     on_insert_video_url=on_insert_video_url
+                    on_insert_ink=on_insert_ink
                     on_click_upload_image=on_click_upload_image
                     on_click_upload_video=on_click_upload_video
                 />
@@ -712,8 +880,11 @@ pub fn App() -> impl IntoView {
                     set_title_before_edit=set_title_before_edit
                     backlinks=Signal::derive(move || backlinks.get())
                     active_note_uploads=Signal::derive(move || active_note_uploads.get())
+                    active_note_whiteboards=Signal::derive(move || active_note_whiteboards.get())
+                    whiteboard_name_index=Signal::derive(move || ink_name_index.get())
                     set_db_error=set_db_error
                     on_open_note=on_open_note
+                    on_open_ink=on_open_ink
                     on_open_or_create_note=on_open_or_create_note
                     on_close_tab=on_close_tab
                     on_new_note=on_new_note
@@ -721,6 +892,38 @@ pub fn App() -> impl IntoView {
                     cleanup_orphaned_media=on_cleanup_orphaned_media
                     on_delete_upload=on_delete_upload
                 />
+
+                <Show when=move || ink_editor_session.get().is_some()>
+                    {move || {
+                        let Some(session) = ink_editor_session.get() else {
+                            return view! { <></> }.into_any();
+                        };
+                        let asset_id = session.asset_id.clone();
+                        let document = ink_documents
+                            .get()
+                            .get(&asset_id)
+                            .cloned()
+                            .unwrap_or_else(|| InkDocument::blank(1400.0, 900.0));
+                        view! {
+                            <InkCanvasModal
+                                initial_document=document
+                                on_cancel=Callback::new({
+                                    let set_ink_editor_session = set_ink_editor_session;
+                                    move |_| set_ink_editor_session.set(None)
+                                })
+                                on_save=Callback::new({
+                                    let set_ink_editor_session = set_ink_editor_session;
+                                    let asset_id = asset_id.clone();
+                                    move |doc: InkDocument| {
+                                        save_ink_document(asset_id.clone(), doc);
+                                        set_ink_editor_session.set(None);
+                                    }
+                                })
+                            />
+                        }
+                            .into_any()
+                    }}
+                </Show>
 
                 <Show when=move || db_error.get().is_some()>
                     <p class="error">{move || db_error.get().unwrap_or_default()}</p>

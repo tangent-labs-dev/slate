@@ -3,6 +3,7 @@ use crate::models::{MediaAsset, Note};
 use icondata::{BsChevronLeft, BsChevronRight, BsPlusLg};
 use leptos::{ev::MouseEvent, prelude::*};
 use leptos_icons::Icon;
+use std::collections::HashMap;
 
 #[component]
 pub fn Sidebar(
@@ -14,8 +15,11 @@ pub fn Sidebar(
     notes: ReadSignal<Vec<Note>>,
     active_note_id: ReadSignal<Option<String>>,
     sorted_uploads: Signal<Vec<MediaAsset>>,
+    sorted_whiteboards: Signal<Vec<MediaAsset>>,
+    whiteboard_name_index: Signal<HashMap<String, String>>,
     set_context_menu: WriteSignal<Option<(String, i32, i32)>>,
     on_open_note: Callback<String>,
+    on_open_ink: Callback<String>,
     on_new_note: Callback<()>,
     on_delete_upload: Callback<String>,
 ) -> impl IntoView {
@@ -121,6 +125,57 @@ pub fn Sidebar(
                             assets=Signal::derive(move || sorted_uploads.get())
                             on_delete=on_delete_upload
                         />
+                    </Show>
+                </div>
+                <div class="sidebar-uploads-folder">
+                    <p class="sidebar-section-title">
+                        {move || format!("Whiteboards ({})", sorted_whiteboards.get().len())}
+                    </p>
+                    <Show
+                        when=move || !sorted_whiteboards.get().is_empty()
+                        fallback=move || {
+                            view! { <p class="uploads-empty">"No whiteboards yet."</p> }
+                        }
+                    >
+                        <div class="uploads-list">
+                            <For
+                                each=move || sorted_whiteboards.get()
+                                key=|asset| asset.id.clone()
+                                children=move |asset: MediaAsset| {
+                                    let board_id = asset.id.clone();
+                                    let board_id_open = board_id.clone();
+                                    let board_id_delete = board_id.clone();
+                                    let board_id_for_name = board_id.clone();
+                                    let name = move || {
+                                        whiteboard_name_index
+                                            .get()
+                                            .get(&board_id_for_name)
+                                            .cloned()
+                                            .unwrap_or_else(|| "Whiteboard".to_string())
+                                    };
+                                    view! {
+                                        <div class="upload-row">
+                                            <button class="upload-main" on:click=move |_| on_open_ink.run(board_id_open.clone())>
+                                                <div class="upload-meta">
+                                                    <span class="upload-name">{name}</span>
+                                                    <span class="upload-path">{board_id.clone()}</span>
+                                                </div>
+                                            </button>
+                                            <button
+                                                class="upload-remove"
+                                                title="Delete whiteboard"
+                                                on:click=move |ev: MouseEvent| {
+                                                    ev.stop_propagation();
+                                                    on_delete_upload.run(board_id_delete.clone());
+                                                }
+                                            >
+                                                "Delete"
+                                            </button>
+                                        </div>
+                                    }
+                                }
+                            />
+                        </div>
                     </Show>
                 </div>
             </div>

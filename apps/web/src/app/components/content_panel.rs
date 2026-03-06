@@ -1,5 +1,5 @@
 use crate::models::{EditorMode, Note, derive_title};
-use crate::note_graph::closest_wiki_anchor;
+use crate::note_graph::{closest_ink_embed, closest_wiki_anchor};
 use js_sys::Date;
 use leptos::prelude::*;
 use leptos::{ev::MouseEvent, web_sys::Element};
@@ -14,6 +14,7 @@ pub fn ContentPanel(
     set_notes: WriteSignal<Vec<Note>>,
     on_open_note: Callback<String>,
     on_open_or_create_note: Callback<String>,
+    on_open_ink: Callback<String>,
     save_note: Callback<String>,
     cleanup_orphaned_media: Callback<()>,
 ) -> impl IntoView {
@@ -66,13 +67,21 @@ pub fn ContentPanel(
                                         class="preview live-preview"
                                         on:click=move |ev: MouseEvent| {
                                             if let Some(target) = ev.target().and_then(|t| t.dyn_into::<Element>().ok())
-                                                && let Some(anchor) = closest_wiki_anchor(target)
                                             {
+                                                if let Some(ink) = closest_ink_embed(target.clone())
+                                                    && let Some(ink_id) = ink.get_attribute("data-ink-id")
+                                                {
+                                                    ev.prevent_default();
+                                                    on_open_ink.run(ink_id);
+                                                    return;
+                                                }
+                                                if let Some(anchor) = closest_wiki_anchor(target) {
                                                 ev.prevent_default();
                                                 if let Some(note_id) = anchor.get_attribute("data-note-id") {
                                                     on_open_note.run(note_id);
                                                 } else if let Some(title) = anchor.get_attribute("data-note-title") {
                                                     on_open_or_create_note.run(title);
+                                                }
                                                 }
                                             }
                                         }
@@ -86,13 +95,21 @@ pub fn ContentPanel(
                             class="preview"
                             on:click=move |ev: MouseEvent| {
                                 if let Some(target) = ev.target().and_then(|t| t.dyn_into::<Element>().ok())
-                                    && let Some(anchor) = closest_wiki_anchor(target)
                                 {
+                                    if let Some(ink) = closest_ink_embed(target.clone())
+                                        && let Some(ink_id) = ink.get_attribute("data-ink-id")
+                                    {
+                                        ev.prevent_default();
+                                        on_open_ink.run(ink_id);
+                                        return;
+                                    }
+                                    if let Some(anchor) = closest_wiki_anchor(target) {
                                     ev.prevent_default();
                                     if let Some(note_id) = anchor.get_attribute("data-note-id") {
                                         on_open_note.run(note_id);
                                     } else if let Some(title) = anchor.get_attribute("data-note-title") {
                                         on_open_or_create_note.run(title);
+                                    }
                                     }
                                 }
                             }

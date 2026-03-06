@@ -104,6 +104,54 @@ pub fn strip_media_ref_lines(content: &str, key_a: &str, key_b: &str) -> String 
     }
 }
 
+pub fn strip_ink_ref_blocks(content: &str, asset_id: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut in_ink_block = false;
+    let mut remove_current = false;
+    let inline_marker = format!("\"id\":\"{asset_id}\"");
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !in_ink_block
+            && (trimmed.starts_with(":::whiteboard") || trimmed.starts_with(":::ink"))
+        {
+            remove_current = trimmed.contains(&inline_marker);
+            if trimmed.ends_with(":::") {
+                // Single-line token style, no block close expected.
+                if !remove_current {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                remove_current = false;
+                continue;
+            }
+            in_ink_block = true;
+            if !remove_current {
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+
+        if in_ink_block {
+            if !remove_current {
+                out.push_str(line);
+                out.push('\n');
+            }
+            if trimmed == ":::" {
+                in_ink_block = false;
+                remove_current = false;
+            }
+            continue;
+        }
+
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    out
+}
+
 fn is_safe_remote_url(value: &str) -> bool {
     let lower = value.trim().to_ascii_lowercase();
     lower.starts_with("https://") || lower.starts_with("http://")

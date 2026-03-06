@@ -1,6 +1,7 @@
 use crate::app::components::{ContentPanel, NoteHeader, TabStrip};
 use crate::models::{EditorMode, MediaAsset, Note};
 use leptos::prelude::*;
+use std::collections::HashMap;
 
 #[component]
 pub fn EditorPane(
@@ -15,8 +16,11 @@ pub fn EditorPane(
     set_title_before_edit: WriteSignal<Option<String>>,
     backlinks: Signal<Vec<String>>,
     active_note_uploads: Signal<Vec<MediaAsset>>,
+    active_note_whiteboards: Signal<Vec<MediaAsset>>,
+    whiteboard_name_index: Signal<HashMap<String, String>>,
     set_db_error: WriteSignal<Option<String>>,
     on_open_note: Callback<String>,
+    on_open_ink: Callback<String>,
     on_open_or_create_note: Callback<String>,
     on_close_tab: Callback<String>,
     on_new_note: Callback<()>,
@@ -48,8 +52,11 @@ pub fn EditorPane(
                     set_title_before_edit=set_title_before_edit
                     backlinks=backlinks
                     active_note_uploads=active_note_uploads
+                    active_note_whiteboards=active_note_whiteboards
+                    whiteboard_name_index=whiteboard_name_index
                     set_db_error=set_db_error
                     on_open_note=on_open_note
+                    on_open_ink=on_open_ink
                     save_note=save_note
                     on_delete_upload=on_delete_upload
                 />
@@ -61,6 +68,7 @@ pub fn EditorPane(
                     set_notes=set_notes
                     on_open_note=on_open_note
                     on_open_or_create_note=on_open_or_create_note
+                    on_open_ink=on_open_ink
                     save_note=save_note
                     cleanup_orphaned_media=cleanup_orphaned_media
                 />
